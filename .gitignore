@@ -1,0 +1,5 @@
+.ace-tool/
+.claude/
+node_modules/
+AGENTS.md
+CLAUDE.md

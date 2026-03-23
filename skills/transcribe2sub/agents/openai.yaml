@@ -1,0 +1,4 @@
+interface:
+  display_name: "Transcribe to Subtitles"
+  short_description: "Create accurate, terminology-consistent subtitles"
+  default_prompt: "Use $transcribe2sub to turn this audio or video into accurate, corrected, terminology-consistent subtitles."
