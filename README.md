@@ -46,6 +46,11 @@ graph TB
 2. **Agent 修正**: 审核纠错、统一术语
 3. **生成字幕**: JSON → SRT
 
+推荐命名约定:
+
+- 机器初稿: `<stem>.review.json`
+- review 后文件: `<stem>.corrected.json`
+
 
 ## 依赖
 
@@ -59,9 +64,12 @@ graph TB
 
 使用 AI Agent 自带的 Skill 安装 Skill 进行安装。
 
+安装完成后，第一次实际使用前，还需要进入 skill 目录运行一次 `pnpm install`。如果当前环境限制依赖安装，需要先批准提权再执行。
+
 ### 手动安装
 
 ```bash
 cp -r skills/transcribe2sub/ /path/to/your/ai/agent/skills/transcribe2sub/
+cd /path/to/your/ai/agent/skills/transcribe2sub/
+pnpm install
 ```
-

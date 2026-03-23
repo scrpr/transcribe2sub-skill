@@ -55,7 +55,7 @@ Treat subtitle timing preview fields as informational only. Rendering recomputes
 
 ## Working Presets
 
-- CJK subtitles: start around `18-24` chars and `2.5-3.5` seconds.
+- CJK subtitles: start around `18-24` chars and `6-8` seconds.
 - Spaced languages: start around `32-42` chars and `3.0-4.0` seconds.
 - Dense dialogue: lower duration before aggressively lowering char count.
 - Slow lectures: allow slightly longer cues when the clause remains semantically intact.

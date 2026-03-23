@@ -9,6 +9,7 @@ import {
   formatAgentJSON,
   formatTimestamp,
   isRetryableTranscribeError,
+  normalizeWordsForSegmentation,
   parseGlossaryText,
   parseTranscribeResponse,
   retryTranscribeRequest,
@@ -37,6 +38,8 @@ function buildReview(): AgentTranscript["review"] {
     allow_asr_corrections: true,
     require_term_consistency: true,
     checklist: [],
+    normalization_diagnostics: [],
+    unresolved_qa_policy: "warn",
   };
 }
 
@@ -210,6 +213,104 @@ test("segmentIntoSubtitles breaks at speaker changes", () => {
   );
 });
 
+test("segmentIntoSubtitles avoids flash cue splits inside a Japanese word", () => {
+  const tokens = createTokens(buildWords([
+    { text: "あ", start: 9.2, end: 9.5, type: "word", speaker_id: "speaker_2" },
+    { text: "、", start: 9.5, end: 9.5, type: "word", speaker_id: "speaker_2" },
+    { text: "お", start: 9.54, end: 9.62, type: "word", speaker_id: "speaker_2" },
+    { text: "は", start: 9.62, end: 9.78, type: "word", speaker_id: "speaker_2" },
+    { text: "よ", start: 10.86, end: 10.87, type: "word", speaker_id: "speaker_2" },
+    { text: "う", start: 10.87, end: 10.87, type: "word", speaker_id: "speaker_2" },
+    { text: "。", start: 10.87, end: 10.87, type: "word", speaker_id: "speaker_2" },
+  ]));
+
+  const subtitles = segmentIntoSubtitles(tokens, 22, 6, { languageCode: "ja" });
+
+  assert.deepEqual(
+    subtitles.map((subtitle) => subtitle.text),
+    ["あ、おはよう。"],
+  );
+});
+
+test("segmentIntoSubtitles no longer reproduces million_ep08 mid-word Japanese splits", () => {
+  const tokens = createTokens(buildWords([
+    { text: "今", start: 29.7, end: 29.88, type: "word", speaker_id: "speaker_1" },
+    { text: "ね", start: 29.88, end: 29.98, type: "word", speaker_id: "speaker_1" },
+    { text: "、", start: 29.98, end: 29.98, type: "word", speaker_id: "speaker_1" },
+    { text: "現", start: 30.54, end: 30.74, type: "word", speaker_id: "speaker_1" },
+    { text: "場", start: 30.74, end: 30.94, type: "word", speaker_id: "speaker_1" },
+    { text: "で", start: 30.94, end: 31.04, type: "word", speaker_id: "speaker_1" },
+    { text: "ど", start: 31.04, end: 31.12, type: "word", speaker_id: "speaker_1" },
+    { text: "う", start: 31.12, end: 31.26, type: "word", speaker_id: "speaker_1" },
+    { text: "す", start: 31.26, end: 31.4, type: "word", speaker_id: "speaker_1" },
+    { text: "れ", start: 31.4, end: 31.48, type: "word", speaker_id: "speaker_1" },
+    { text: "ば", start: 31.48, end: 31.6, type: "word", speaker_id: "speaker_1" },
+    { text: "い", start: 31.6, end: 31.76, type: "word", speaker_id: "speaker_1" },
+    { text: "い", start: 31.76, end: 31.88, type: "word", speaker_id: "speaker_1" },
+    { text: "か", start: 31.88, end: 32.2, type: "word", speaker_id: "speaker_1" },
+    { text: "桃", start: 32.2, end: 32.439, type: "word", speaker_id: "speaker_1" },
+    { text: "子", start: 32.439, end: 32.6, type: "word", speaker_id: "speaker_1" },
+    { text: "ち", start: 32.6, end: 32.64, type: "word", speaker_id: "speaker_1" },
+    { text: "ゃ", start: 32.64, end: 32.74, type: "word", speaker_id: "speaker_1" },
+    { text: "ん", start: 32.74, end: 32.78, type: "word", speaker_id: "speaker_1" },
+    { text: "に", start: 32.78, end: 32.9, type: "word", speaker_id: "speaker_1" },
+    { text: "教", start: 32.9, end: 33.1, type: "word", speaker_id: "speaker_1" },
+    { text: "え", start: 33.1, end: 33.22, type: "word", speaker_id: "speaker_1" },
+    { text: "て", start: 33.22, end: 33.28, type: "word", speaker_id: "speaker_1" },
+    { text: "も", start: 33.28, end: 33.4, type: "word", speaker_id: "speaker_1" },
+    { text: "ら", start: 33.4, end: 33.54, type: "word", speaker_id: "speaker_1" },
+    { text: "っ", start: 33.54, end: 33.58, type: "word", speaker_id: "speaker_1" },
+    { text: "て", start: 33.58, end: 33.699, type: "word", speaker_id: "speaker_1" },
+    { text: "た", start: 33.7, end: 33.8, type: "word", speaker_id: "speaker_1" },
+    { text: "ん", start: 33.8, end: 33.84, type: "word", speaker_id: "speaker_1" },
+    { text: "だ", start: 33.84, end: 33.96, type: "word", speaker_id: "speaker_1" },
+    { text: "よ", start: 33.96, end: 34.28, type: "word", speaker_id: "speaker_1" },
+    { text: "。", start: 34.28, end: 34.28, type: "word", speaker_id: "speaker_1" },
+  ]));
+
+  const subtitles = segmentIntoSubtitles(tokens, 22, 6, { languageCode: "ja" });
+  const texts = subtitles.map((subtitle) => subtitle.text);
+
+  assert.equal(texts.includes("今ね、現場でどうすれ"), false);
+  assert.equal(texts.includes("ばいいか桃子ちゃんに教えてもらってたんだよ。"), false);
+});
+
+test("segmentIntoSubtitles keeps katakana runs intact under CJK soft limits", () => {
+  const tokens = createTokens(buildWords([
+    { text: "き", start: 420.312, end: 420.452, type: "word", speaker_id: "speaker_8" },
+    { text: "っ", start: 420.452, end: 420.552, type: "word", speaker_id: "speaker_8" },
+    { text: "と", start: 420.552, end: 421.112, type: "word", speaker_id: "speaker_8" },
+    { text: "ゴ", start: 421.112, end: 421.152, type: "word", speaker_id: "speaker_8" },
+    { text: "ー", start: 421.152, end: 421.292, type: "word", speaker_id: "speaker_8" },
+    { text: "ジ", start: 421.292, end: 421.332, type: "word", speaker_id: "speaker_8" },
+    { text: "ャ", start: 421.332, end: 421.412, type: "word", speaker_id: "speaker_8" },
+    { text: "ス", start: 421.412, end: 421.552, type: "word", speaker_id: "speaker_8" },
+    { text: "な", start: 421.552, end: 421.652, type: "word", speaker_id: "speaker_8" },
+    { text: "ス", start: 421.652, end: 421.732, type: "word", speaker_id: "speaker_8" },
+    { text: "テ", start: 421.732, end: 421.812, type: "word", speaker_id: "speaker_8" },
+    { text: "ー", start: 421.812, end: 421.912, type: "word", speaker_id: "speaker_8" },
+    { text: "ジ", start: 421.912, end: 422.032, type: "word", speaker_id: "speaker_8" },
+    { text: "に", start: 422.032, end: 422.331, type: "word", speaker_id: "speaker_8" },
+    { text: "違", start: 422.332, end: 422.412, type: "word", speaker_id: "speaker_8" },
+    { text: "い", start: 422.412, end: 422.492, type: "word", speaker_id: "speaker_8" },
+    { text: "あ", start: 422.492, end: 422.592, type: "word", speaker_id: "speaker_8" },
+    { text: "り", start: 422.592, end: 422.672, type: "word", speaker_id: "speaker_8" },
+    { text: "ま", start: 422.672, end: 422.831, type: "word", speaker_id: "speaker_8" },
+    { text: "せ", start: 422.832, end: 422.852, type: "word", speaker_id: "speaker_8" },
+    { text: "ん", start: 422.852, end: 422.992, type: "word", speaker_id: "speaker_8" },
+    { text: "わ", start: 422.992, end: 423.072, type: "word", speaker_id: "speaker_8" },
+    { text: "ね", start: 423.072, end: 423.252, type: "word", speaker_id: "speaker_8" },
+    { text: "。", start: 423.252, end: 423.252, type: "word", speaker_id: "speaker_8" },
+  ]));
+
+  const subtitles = segmentIntoSubtitles(tokens, 22, 6, { languageCode: "ja" });
+
+  assert.deepEqual(
+    subtitles.map((subtitle) => subtitle.text),
+    ["きっとゴージャスなステージに違いありませんわね。"],
+  );
+});
+
 test("subtitlesFromAgentTranscript rebuilds subtitles from token ranges without losing timed tokens", () => {
   const tokens = createTokens(buildWords([
     { text: "Hello", start: 0, end: 0.4, type: "word" },
@@ -289,6 +390,21 @@ OpenAI
   ]);
 });
 
+test("normalizeWordsForSegmentation splits mixed raw tokens and records diagnostics", () => {
+  const { words, diagnostics } = normalizeWordsForSegmentation(buildWords([
+    { text: "。CD", start: 596.372, end: 598.952, type: "word", speaker_id: "speaker_12" },
+    { text: "。ま", start: 736.492, end: 745.102, type: "word", speaker_id: "speaker_0" },
+  ]));
+
+  assert.deepEqual(
+    words.map((word) => word.text),
+    ["。", "CD", "。", "ま"],
+  );
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "mixed_raw_token" && diagnostic.raw_text === "。CD"));
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "mixed_raw_token" && diagnostic.raw_text === "。ま"));
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "long_short_token" && diagnostic.raw_text === "。ま"));
+});
+
 test("subtitlesFromAgentTranscript rejects leftover glossary aliases", () => {
   const tokens = createTokens(buildWords([
     { text: "Open", start: 0, end: 0.3, type: "word" },
@@ -365,4 +481,31 @@ test("formatAgentJSON emits correction and glossary metadata", () => {
   assert.ok(json.instructions.some((line) => line.includes("ASR 错词")));
   assert.ok(json.instructions.some((line) => line.includes("glossary.candidates")));
   assert.ok(json.instructions.some((line) => line.includes("glossary.collected")));
+});
+
+test("formatAgentJSON emits normalization diagnostics and subtitle qa flags", () => {
+  const normalized = normalizeWordsForSegmentation(buildWords([
+    { text: "渋", start: 0, end: 0.2, type: "word" },
+    { text: "滞", start: 0.2, end: 0.4, type: "word" },
+    { text: "。CD", start: 0.4, end: 1.4, type: "word" },
+    { text: "が", start: 1.4, end: 1.5, type: "word" },
+    { text: "届", start: 1.5, end: 1.7, type: "word" },
+    { text: "く", start: 1.7, end: 1.9, type: "word" },
+  ]));
+  const tokens = createTokens(normalized.words);
+  const subtitles = segmentIntoSubtitles(tokens, 22, 6, { languageCode: "ja" });
+
+  const json = JSON.parse(formatAgentJSON({
+    language_code: "ja",
+    language_probability: 1,
+    text: "渋滞。CDが届く",
+    words: normalized.words,
+  }, tokens, subtitles, { maxChars: 22, maxDuration: 6 }, [], normalized.diagnostics)) as {
+    review: AgentTranscript["review"];
+    subtitles: Array<{ qa_flags?: Array<{ code: string }> }>;
+  };
+
+  assert.equal(json.review.unresolved_qa_policy, "warn");
+  assert.ok(json.review.normalization_diagnostics.some((diagnostic) => diagnostic.code === "mixed_raw_token"));
+  assert.ok(json.subtitles.some((subtitle) => subtitle.qa_flags?.some((flag) => flag.code === "contains_mixed_raw_token")));
 });

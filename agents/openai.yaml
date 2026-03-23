@@ -1,4 +1,4 @@
 interface:
   display_name: "Transcribe to Subtitles"
   short_description: "Create accurate, terminology-consistent subtitles"
-  default_prompt: "Use $transcribe2sub to turn this audio or video into accurate, corrected, terminology-consistent subtitles."
+  default_prompt: "Use $transcribe2sub as a quality-first workflow: prefer JSON review before SRT, save the machine draft as <stem>.review.json and the reviewed file as <stem>.corrected.json, inspect qa_flags and glossary state, keep full token coverage, and never edit read-only token fields unless the user explicitly wants a fast draft."
