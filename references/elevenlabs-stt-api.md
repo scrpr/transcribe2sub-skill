@@ -10,7 +10,7 @@ POST https://api.elevenlabs.io/v1/speech-to-text
 
 - Header: `xi-api-key: <ELEVENLABS_API_KEY>`
 - Unauthenticated: append `?allow_unauthenticated=1` query parameter (no header needed)
-- Current unauthenticated requests also need `diarize=true`; the script now adds this automatically.
+- The script now enables `diarize=true` by default for all STT requests, including unauthenticated mode.
 
 ## Request
 

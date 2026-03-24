@@ -790,12 +790,9 @@ export function buildTranscribeRequest(
   form.set("model_id", "scribe_v2");
   form.set("file", file);
   form.set("timestamps_granularity", "word");
+  form.set("diarize", "true");
   if (language) {
     form.set("language_code", language);
-  }
-  if (useUnauth) {
-    // ElevenLabs currently requires diarization on unauthenticated STT requests.
-    form.set("diarize", "true");
   }
 
   return { url, form };

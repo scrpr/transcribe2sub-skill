@@ -107,12 +107,12 @@ test("buildTranscribeRequest enables diarization for unauthenticated requests", 
   assert.equal(requestFile.name, "sample.m4a");
 });
 
-test("buildTranscribeRequest skips diarization for authenticated requests", () => {
+test("buildTranscribeRequest enables diarization for authenticated requests", () => {
   const file = new File(["audio"], "sample.m4a", { type: "audio/mp4" });
   const { url, form } = buildTranscribeRequest(file);
 
   assert.equal(url.searchParams.get("allow_unauthenticated"), null);
-  assert.equal(form.get("diarize"), null);
+  assert.equal(form.get("diarize"), "true");
 });
 
 test("transcribeRetryDelayMs applies exponential backoff with bounded jitter", () => {
