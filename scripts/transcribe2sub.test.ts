@@ -400,9 +400,133 @@ test("normalizeWordsForSegmentation splits mixed raw tokens and records diagnost
     words.map((word) => word.text),
     ["。", "CD", "。", "ま"],
   );
+  assert.ok(words[0]!.end <= 596.422);
+  assert.ok(words[1]!.start >= 598.7);
+  assert.ok(words[2]!.end <= 736.542);
+  assert.ok(words[3]!.start >= 744.9);
   assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "mixed_raw_token" && diagnostic.raw_text === "。CD"));
   assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "mixed_raw_token" && diagnostic.raw_text === "。ま"));
   assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "long_short_token" && diagnostic.raw_text === "。ま"));
+});
+
+test("subtitlesFromAgentTranscript clips long punctuation tails while preserving readable short cues", () => {
+  const tokens = createTokens(buildWords([
+    { text: "誰", start: 1092.102, end: 1092.222, type: "word", speaker_id: "speaker_0" },
+    { text: "で", start: 1092.222, end: 1092.402, type: "word", speaker_id: "speaker_0" },
+    { text: "す", start: 1092.402, end: 1092.662, type: "word", speaker_id: "speaker_0" },
+    { text: "？", start: 1092.662, end: 1095.482, type: "word", speaker_id: "speaker_0" },
+    { text: "え", start: 1095.482, end: 1095.492, type: "word", speaker_id: "speaker_0" },
+    { text: "？", start: 1095.492, end: 1098.702, type: "word", speaker_id: "speaker_0" },
+    { text: "あ", start: 1100.446, end: 1102.246, type: "word", speaker_id: "speaker_1" },
+  ]));
+
+  const transcript: AgentTranscript = {
+    version: 2,
+    source: {
+      language_code: "ja",
+      language_probability: 1,
+      text: "誰です？え？あ",
+    },
+    settings: {
+      max_chars: 22,
+      max_duration: 6,
+    },
+    review: buildReview(),
+    glossary: buildGlossary(),
+    instructions: [],
+    tokens,
+    subtitles: [
+      {
+        token_start: 0,
+        token_end: 3,
+        word_start: 0,
+        word_end: 3,
+        start: 1092.102,
+        end: 1095.482,
+        text: "誰です？",
+        speaker_ids: ["speaker_0"],
+      },
+      {
+        token_start: 4,
+        token_end: 5,
+        word_start: 4,
+        word_end: 5,
+        start: 1095.482,
+        end: 1098.702,
+        text: "え？",
+        speaker_ids: ["speaker_0"],
+      },
+      {
+        token_start: 6,
+        token_end: 6,
+        word_start: 6,
+        word_end: 6,
+        start: 1100.446,
+        end: 1102.246,
+        text: "あ",
+        speaker_ids: ["speaker_1"],
+      },
+    ],
+  };
+
+  const subtitles = subtitlesFromAgentTranscript(transcript);
+  assert.ok(subtitles[0]!.end < 1093);
+  assert.ok(subtitles[1]!.end >= 1095.982);
+  assert.ok(subtitles[1]!.end < 1096.1);
+});
+
+test("subtitlesFromAgentTranscript clips anomalous short-word tails before trailing punctuation", () => {
+  const tokens = createTokens(buildWords([
+    { text: "で", start: 713.812, end: 713.872, type: "word", speaker_id: "speaker_3" },
+    { text: "す", start: 713.872, end: 713.992, type: "word", speaker_id: "speaker_3" },
+    { text: "か", start: 713.992, end: 714.072, type: "word", speaker_id: "speaker_3" },
+    { text: "ら", start: 714.072, end: 722.092, type: "word", speaker_id: "speaker_3" },
+    { text: "。", start: 722.092, end: 722.092, type: "word", speaker_id: "speaker_3" },
+    { text: "こ", start: 724.652, end: 724.792, type: "word", speaker_id: "speaker_3" },
+  ]));
+
+  const transcript: AgentTranscript = {
+    version: 2,
+    source: {
+      language_code: "ja",
+      language_probability: 1,
+      text: "ですから。この",
+    },
+    settings: {
+      max_chars: 22,
+      max_duration: 6,
+    },
+    review: buildReview(),
+    glossary: buildGlossary(),
+    instructions: [],
+    tokens,
+    subtitles: [
+      {
+        token_start: 0,
+        token_end: 4,
+        word_start: 0,
+        word_end: 4,
+        start: 713.812,
+        end: 722.092,
+        text: "ですから。",
+        speaker_ids: ["speaker_3"],
+      },
+      {
+        token_start: 5,
+        token_end: 5,
+        word_start: 5,
+        word_end: 5,
+        start: 724.652,
+        end: 724.792,
+        text: "こ",
+        speaker_ids: ["speaker_3"],
+      },
+    ],
+  };
+
+  const subtitles = subtitlesFromAgentTranscript(transcript);
+  assert.ok(subtitles[0]!.end < 715);
+  assert.ok(subtitles[0]!.end >= 714.6);
 });
 
 test("subtitlesFromAgentTranscript rejects leftover glossary aliases", () => {

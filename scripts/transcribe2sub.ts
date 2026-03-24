@@ -169,6 +169,20 @@ const TRAILING_SPLIT_PUNCTUATION = /[。！？!?、，；：]+$/u;
 const CJK_LANGUAGE_CODE = /^(ja|zh|ko)(-|$)/i;
 const JAPANESE_PARTICLE_BOUNDARY = /[はがをにへともでかねよのだてで]$/u;
 const LONG_SHORT_TOKEN_DURATION_THRESHOLD = 1.1;
+const MIXED_TOKEN_PUNCTUATION_DURATION = 0.05;
+const MIXED_TOKEN_CJK_CHAR_DURATION = 0.18;
+const MIXED_TOKEN_LATIN_CHAR_DURATION = 0.12;
+const MIXED_TOKEN_OTHER_CHAR_DURATION = 0.16;
+const MIXED_TOKEN_MIN_CORE_DURATION = 0.12;
+const MIXED_TOKEN_MAX_CORE_DURATION = 0.72;
+const SUBTITLE_END_GUARD = 0.04;
+const MIN_SUBTITLE_DISPLAY_DURATION = 0.5;
+const SHORT_TAIL_CLIP_MULTIPLIER = 2.6;
+const SHORT_TAIL_CLIP_FALLBACK_DURATION = 0.45;
+const SHORT_TAIL_CLIP_MAX_DURATION = 0.6;
+const SHORT_TAIL_CLIP_TRIGGER_RATIO = 3.5;
+const PUNCTUATION_TAIL_DISPLAY_DURATION = 0.18;
+const MAX_PUNCTUATION_TAIL_DISPLAY_DURATION = 0.24;
 const TRANSCRIBE_MAX_ATTEMPTS = 3;
 const TRANSCRIBE_RETRY_BASE_DELAY_MS = 1_000;
 const TRANSCRIBE_RETRY_JITTER_MS = 250;
@@ -614,6 +628,10 @@ function textLength(text: string): number {
   return [...text].length;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 function firstContentChar(text: string): string | undefined {
   return [...text].find((char) => !/\s/u.test(char));
 }
@@ -656,6 +674,77 @@ function textHasUnexpectedMixedScripts(text: string): boolean {
   return classes.has("japanese") || classes.has("other");
 }
 
+function visibleSpeechCharCount(text: string): number {
+  let count = 0;
+  for (const char of text) {
+    if (/\s/u.test(char) || isPunctuationChar(char)) {
+      continue;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function estimatedSpeechDuration(text: string): number {
+  let duration = 0;
+  let counted = false;
+
+  for (const char of text) {
+    if (/\s/u.test(char) || isPunctuationChar(char)) {
+      continue;
+    }
+
+    counted = true;
+    if (isJapaneseWordChar(char) || /\p{Script=Hangul}/u.test(char)) {
+      duration += MIXED_TOKEN_CJK_CHAR_DURATION;
+    } else if (isLatinChar(char) || isNumberChar(char)) {
+      duration += MIXED_TOKEN_LATIN_CHAR_DURATION;
+    } else {
+      duration += MIXED_TOKEN_OTHER_CHAR_DURATION;
+    }
+  }
+
+  if (!counted) {
+    return 0;
+  }
+
+  return clamp(duration, MIXED_TOKEN_MIN_CORE_DURATION, MIXED_TOKEN_MAX_CORE_DURATION);
+}
+
+function buildMixedWordPieces(word: Word, leading: string, core: string, trailing: string): Word[] {
+  const totalDuration = Math.max(0, word.end - word.start);
+  const leadingChars = textLength(leading);
+  const trailingChars = textLength(trailing);
+  const leadingDuration = Math.min(totalDuration, leadingChars * MIXED_TOKEN_PUNCTUATION_DURATION);
+  const trailingDuration = Math.min(
+    Math.max(0, totalDuration - leadingDuration),
+    trailingChars * MIXED_TOKEN_PUNCTUATION_DURATION,
+  );
+  const availableCoreDuration = Math.max(0, totalDuration - leadingDuration - trailingDuration);
+  const coreDuration = Math.min(availableCoreDuration, estimatedSpeechDuration(core));
+  const slackDuration = Math.max(0, totalDuration - leadingDuration - coreDuration - trailingDuration);
+  const slackBeforeCore = leadingChars > 0 ? (trailingChars > 0 ? slackDuration / 2 : slackDuration) : 0;
+  const slackAfterTrailing = trailingChars > 0 ? slackDuration - slackBeforeCore : 0;
+
+  const pieces: Word[] = [];
+  let cursor = word.start;
+
+  if (leading) {
+    pieces.push({ ...word, text: leading, start: cursor, end: cursor + leadingDuration });
+    cursor += leadingDuration + slackBeforeCore;
+  }
+
+  pieces.push({ ...word, text: core, start: cursor, end: cursor + coreDuration });
+  cursor += coreDuration;
+
+  if (trailing) {
+    pieces.push({ ...word, text: trailing, start: cursor, end: cursor + trailingDuration });
+    cursor += trailingDuration + slackAfterTrailing;
+  }
+
+  return pieces;
+}
+
 function normalizeWordPieces(word: Word): Word[] {
   if (word.type !== "word" || textLength(word.text) <= 1) {
     return [word];
@@ -670,16 +759,7 @@ function normalizeWordPieces(word: Word): Word[] {
     return [word];
   }
 
-  const pieces: Word[] = [];
-  if (leading) {
-    pieces.push({ ...word, text: leading, start: word.start, end: word.start });
-  }
-  pieces.push({ ...word, text: core, start: word.start, end: word.end });
-  if (trailing) {
-    pieces.push({ ...word, text: trailing, start: word.end, end: word.end });
-  }
-
-  return pieces;
+  return buildMixedWordPieces(word, leading, core, trailing);
 }
 
 export function normalizeWordsForSegmentation(words: Word[]): { words: Word[]; diagnostics: NormalizationDiagnostic[] } {
@@ -919,6 +999,11 @@ function renderTokenRange(tokens: Token[], tokenStart: number, tokenEnd: number)
   return normalizeText(tokens.slice(tokenStart, tokenEnd + 1).map((token) => token.text).join(""));
 }
 
+function isPunctuationOnlyToken(token: Token): boolean {
+  const text = token.text.trim();
+  return text.length > 0 && [...text].every((char) => isPunctuationChar(char));
+}
+
 function collectSpeakerIds(tokens: Token[], tokenStart: number, tokenEnd: number): string[] {
   const speakerIds = new Set<string>();
   for (let i = tokenStart; i <= tokenEnd; i++) {
@@ -942,22 +1027,153 @@ function findWordBounds(tokens: Token[], tokenStart: number, tokenEnd: number): 
   return { wordStart, wordEnd };
 }
 
-function resolveTimedRange(tokens: Token[], tokenStart: number, tokenEnd: number): { start: number; end: number } {
-  let first: Token | undefined;
-  let last: Token | undefined;
-
-  for (let i = tokenStart; i <= tokenEnd; i++) {
+function findNextTimedTokenAfter(tokens: Token[], tokenIndex: number): Token | undefined {
+  for (let i = tokenIndex + 1; i < tokens.length; i++) {
     if (tokens[i] && tokens[i].type !== "spacing") {
-      first ??= tokens[i];
-      last = tokens[i];
+      return tokens[i];
     }
   }
+  return undefined;
+}
 
-  if (!first || !last) {
+function median(values: number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) {
+    return sorted[middle] ?? null;
+  }
+
+  const left = sorted[middle - 1];
+  const right = sorted[middle];
+  if (left === undefined || right === undefined) {
+    return null;
+  }
+  return (left + right) / 2;
+}
+
+function shortTailClipBudget(priorVisibleTokens: Token[]): number {
+  const baseline = median(
+    priorVisibleTokens
+      .map((token) => token.end - token.start)
+      .filter((duration) => duration > 0),
+  );
+
+  if (baseline === null) {
+    return SHORT_TAIL_CLIP_FALLBACK_DURATION;
+  }
+
+  return clamp(
+    baseline * SHORT_TAIL_CLIP_MULTIPLIER,
+    SHORT_TAIL_CLIP_FALLBACK_DURATION,
+    SHORT_TAIL_CLIP_MAX_DURATION,
+  );
+}
+
+function shouldClipShortTailToken(token: Token, priorVisibleTokens: Token[]): boolean {
+  if (token.type !== "word" || isPunctuationOnlyToken(token) || visibleSpeechCharCount(token.text) === 0) {
+    return false;
+  }
+
+  if (visibleSpeechCharCount(token.text) > 2 || priorVisibleTokens.length === 0) {
+    return false;
+  }
+
+  const duration = token.end - token.start;
+  if (duration < LONG_SHORT_TOKEN_DURATION_THRESHOLD) {
+    return false;
+  }
+
+  const baseline = median(
+    priorVisibleTokens
+      .map((priorToken) => priorToken.end - priorToken.start)
+      .filter((priorDuration) => priorDuration > 0),
+  );
+
+  if (baseline === null) {
+    return false;
+  }
+
+  return duration >= Math.max(SHORT_TAIL_CLIP_FALLBACK_DURATION * 1.5, baseline * SHORT_TAIL_CLIP_TRIGGER_RATIO);
+}
+
+function punctuationTailBudget(trailingPunctuationTokens: Token[]): number {
+  const visiblePunctuationChars = trailingPunctuationTokens.reduce(
+    (count, token) => count + textLength(token.text.trim()),
+    0,
+  );
+  return clamp(
+    Math.max(PUNCTUATION_TAIL_DISPLAY_DURATION, visiblePunctuationChars * 0.1),
+    PUNCTUATION_TAIL_DISPLAY_DURATION,
+    MAX_PUNCTUATION_TAIL_DISPLAY_DURATION,
+  );
+}
+
+function resolveSubtitleEnd(
+  tokens: Token[],
+  tokenEnd: number,
+  subtitleStart: number,
+  timedTokens: Token[],
+): number {
+  const last = timedTokens.at(-1);
+  if (!last) {
+    return subtitleStart;
+  }
+
+  const nextTimedToken = findNextTimedTokenAfter(tokens, tokenEnd);
+  const hardUpperBound = nextTimedToken
+    ? Math.max(subtitleStart, nextTimedToken.start - SUBTITLE_END_GUARD)
+    : Number.POSITIVE_INFINITY;
+  const absoluteUpperBound = Math.min(last.end, hardUpperBound);
+
+  let trailingPunctuationStart = timedTokens.length;
+  while (trailingPunctuationStart > 0 && isPunctuationOnlyToken(timedTokens[trailingPunctuationStart - 1]!)) {
+    trailingPunctuationStart -= 1;
+  }
+
+  const trailingPunctuationTokens = timedTokens.slice(trailingPunctuationStart);
+  const anchor = trailingPunctuationStart > 0 ? timedTokens[trailingPunctuationStart - 1] : undefined;
+  let desiredEnd = absoluteUpperBound;
+
+  if (anchor && anchor.type !== "audio_event") {
+    const priorVisibleTokens = timedTokens
+      .slice(0, trailingPunctuationStart - 1)
+      .filter((token) => token.type === "word" && !isPunctuationOnlyToken(token) && visibleSpeechCharCount(token.text) > 0);
+    const anchorEnd = shouldClipShortTailToken(anchor, priorVisibleTokens)
+      ? Math.min(anchor.end, anchor.start + shortTailClipBudget(priorVisibleTokens))
+      : anchor.end;
+
+    desiredEnd = trailingPunctuationTokens.length > 0
+      ? Math.min(absoluteUpperBound, anchorEnd + punctuationTailBudget(trailingPunctuationTokens))
+      : Math.min(absoluteUpperBound, anchorEnd);
+  } else if (trailingPunctuationTokens.length > 0) {
+    const firstTrailingPunctuation = trailingPunctuationTokens[0]!;
+    desiredEnd = Math.min(
+      absoluteUpperBound,
+      firstTrailingPunctuation.start + punctuationTailBudget(trailingPunctuationTokens),
+    );
+  }
+
+  if (desiredEnd >= absoluteUpperBound) {
+    return absoluteUpperBound;
+  }
+
+  const minCueEnd = Math.min(absoluteUpperBound, subtitleStart + MIN_SUBTITLE_DISPLAY_DURATION);
+  return Math.max(desiredEnd, minCueEnd);
+}
+
+function resolveTimedRange(tokens: Token[], tokenStart: number, tokenEnd: number): { start: number; end: number } {
+  const timedTokens = tokens.slice(tokenStart, tokenEnd + 1).filter((token) => token.type !== "spacing");
+  const first = timedTokens[0];
+
+  if (!first || timedTokens.length === 0) {
     throw new Error(`字幕范围 ${tokenStart}-${tokenEnd} 不包含可计时 token`);
   }
 
-  return { start: first.start, end: last.end };
+  return { start: first.start, end: resolveSubtitleEnd(tokens, tokenEnd, first.start, timedTokens) };
 }
 
 function toSubtitle(tokens: Token[], tokenStart: number, tokenEnd: number, index: number, textOverride?: string): Subtitle {
