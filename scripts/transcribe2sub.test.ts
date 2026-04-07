@@ -311,6 +311,35 @@ test("segmentIntoSubtitles keeps katakana runs intact under CJK soft limits", ()
   );
 });
 
+test("segmentIntoSubtitles re-merges lyric fragments split by anomalously long kana timings", () => {
+  const tokens = createTokens(buildWords([
+    { text: "リ", start: 0.0, end: 6.86, type: "word", speaker_id: "speaker_8" },
+    { text: "ン", start: 6.98, end: 7.12, type: "word", speaker_id: "speaker_8" },
+    { text: "ラ", start: 7.12, end: 7.3, type: "word", speaker_id: "speaker_8" },
+    { text: "リ", start: 7.3, end: 7.44, type: "word", speaker_id: "speaker_8" },
+    { text: "ン", start: 7.44, end: 10.02, type: "word", speaker_id: "speaker_8" },
+    { text: "ラ", start: 10.02, end: 10.14, type: "word", speaker_id: "speaker_8" },
+    { text: "、", start: 10.14, end: 10.14, type: "word", speaker_id: "speaker_8" },
+    { text: "リ", start: 10.14, end: 10.15, type: "word", speaker_id: "speaker_8" },
+    { text: "ン", start: 10.15, end: 10.15, type: "word", speaker_id: "speaker_8" },
+    { text: "ラ", start: 10.15, end: 10.15, type: "word", speaker_id: "speaker_8" },
+    { text: "リ", start: 10.15, end: 10.15, type: "word", speaker_id: "speaker_8" },
+    { text: "ン", start: 10.15, end: 10.24, type: "word", speaker_id: "speaker_8" },
+    { text: "ラ", start: 10.24, end: 10.5, type: "word", speaker_id: "speaker_8" },
+    { text: "リ", start: 10.5, end: 10.6, type: "word", speaker_id: "speaker_8" },
+    { text: "ン", start: 10.6, end: 10.7, type: "word", speaker_id: "speaker_8" },
+    { text: "ラ", start: 10.7, end: 10.8, type: "word", speaker_id: "speaker_8" },
+    { text: "。", start: 10.8, end: 10.8, type: "word", speaker_id: "speaker_8" },
+  ]));
+
+  const subtitles = segmentIntoSubtitles(tokens, 22, 6, { languageCode: "ja" });
+
+  assert.deepEqual(
+    subtitles.map((subtitle) => subtitle.text),
+    ["リンラリンラ、リンラリンラリンラ。"],
+  );
+});
+
 test("subtitlesFromAgentTranscript rebuilds subtitles from token ranges without losing timed tokens", () => {
   const tokens = createTokens(buildWords([
     { text: "Hello", start: 0, end: 0.4, type: "word" },
@@ -374,6 +403,59 @@ test("subtitlesFromAgentTranscript rebuilds subtitles from token ranges without 
     subtitles.map((subtitle) => [subtitle.tokenStart, subtitle.tokenEnd]),
     [[0, 3], [5, 10]],
   );
+});
+
+test("subtitlesFromAgentTranscript applies timing padding without crossing neighboring cues", () => {
+  const tokens = createTokens(buildWords([
+    { text: "Hi", start: 1.0, end: 1.3, type: "word", speaker_id: "speaker_0" },
+    { text: " ", start: 1.3, end: 1.35, type: "spacing", speaker_id: "speaker_0" },
+    { text: "Bye", start: 1.5, end: 1.8, type: "word", speaker_id: "speaker_0" },
+  ]));
+
+  const transcript: AgentTranscript = {
+    version: 2,
+    source: {
+      language_code: "en",
+      language_probability: 1,
+      text: "Hi Bye",
+    },
+    settings: {
+      max_chars: 42,
+      max_duration: 5,
+    },
+    review: buildReview(),
+    glossary: buildGlossary(),
+    instructions: [],
+    tokens,
+    subtitles: [
+      {
+        token_start: 0,
+        token_end: 0,
+        word_start: 0,
+        word_end: 0,
+        start: 1.0,
+        end: 1.3,
+        text: "Hi",
+        speaker_ids: ["speaker_0"],
+      },
+      {
+        token_start: 2,
+        token_end: 2,
+        word_start: 2,
+        word_end: 2,
+        start: 1.5,
+        end: 1.8,
+        text: "Bye",
+        speaker_ids: ["speaker_0"],
+      },
+    ],
+  };
+
+  const subtitles = subtitlesFromAgentTranscript(transcript);
+  assert.ok(Math.abs(subtitles[0]!.start - 0.82) < 1e-9);
+  assert.ok(Math.abs(subtitles[0]!.end - 1.42) < 1e-9);
+  assert.ok(Math.abs(subtitles[1]!.start - 1.34) < 1e-9);
+  assert.ok(Math.abs(subtitles[1]!.end - 1.92) < 1e-9);
 });
 
 test("parseGlossaryText supports canonical terms and aliases", () => {
@@ -472,7 +554,7 @@ test("subtitlesFromAgentTranscript clips long punctuation tails while preserving
   const subtitles = subtitlesFromAgentTranscript(transcript);
   assert.ok(subtitles[0]!.end < 1093);
   assert.ok(subtitles[1]!.end >= 1095.982);
-  assert.ok(subtitles[1]!.end < 1096.1);
+  assert.ok(subtitles[1]!.end < 1096.25);
 });
 
 test("subtitlesFromAgentTranscript clips anomalous short-word tails before trailing punctuation", () => {
@@ -527,6 +609,102 @@ test("subtitlesFromAgentTranscript clips anomalous short-word tails before trail
   const subtitles = subtitlesFromAgentTranscript(transcript);
   assert.ok(subtitles[0]!.end < 715);
   assert.ok(subtitles[0]!.end >= 714.6);
+});
+
+test("subtitlesFromAgentTranscript rejects severe timing span mismatches after review edits", () => {
+  const tokens = createTokens(buildWords([
+    { text: "進", start: 882.886, end: 920.086, type: "word", speaker_id: "speaker_2" },
+    { text: "ま", start: 920.546, end: 920.666, type: "word", speaker_id: "speaker_2" },
+    { text: "な", start: 920.666, end: 920.806, type: "word", speaker_id: "speaker_2" },
+    { text: "い", start: 920.806, end: 920.946, type: "word", speaker_id: "speaker_2" },
+    { text: "と", start: 920.946, end: 921.086, type: "word", speaker_id: "speaker_2" },
+    { text: "。", start: 921.086, end: 921.086, type: "word", speaker_id: "speaker_2" },
+  ]));
+
+  const transcript: AgentTranscript = {
+    version: 2,
+    source: {
+      language_code: "ja",
+      language_probability: 1,
+      text: "進まないと。",
+    },
+    settings: {
+      max_chars: 22,
+      max_duration: 6,
+    },
+    review: buildReview(),
+    glossary: buildGlossary(),
+    instructions: [],
+    tokens,
+    subtitles: [
+      {
+        token_start: 0,
+        token_end: 5,
+        word_start: 0,
+        word_end: 5,
+        start: 882.886,
+        end: 921.086,
+        text: "進まないと。",
+        speaker_ids: ["speaker_2"],
+      },
+    ],
+  };
+
+  assert.throws(
+    () => subtitlesFromAgentTranscript(transcript),
+    /timing_span_mismatch/,
+  );
+});
+
+test("subtitlesFromAgentTranscript rejects zero-duration subtitles", () => {
+  const tokens = createTokens(buildWords([
+    { text: "あ", start: 10, end: 10, type: "word", speaker_id: "speaker_0" },
+    { text: "い", start: 10, end: 10.4, type: "word", speaker_id: "speaker_0" },
+  ]));
+
+  const transcript: AgentTranscript = {
+    version: 2,
+    source: {
+      language_code: "ja",
+      language_probability: 1,
+      text: "あ",
+    },
+    settings: {
+      max_chars: 22,
+      max_duration: 6,
+    },
+    review: buildReview(),
+    glossary: buildGlossary(),
+    instructions: [],
+    tokens,
+    subtitles: [
+      {
+        token_start: 0,
+        token_end: 0,
+        word_start: 0,
+        word_end: 0,
+        start: 10,
+        end: 10,
+        text: "あ",
+        speaker_ids: ["speaker_0"],
+      },
+      {
+        token_start: 1,
+        token_end: 1,
+        word_start: 1,
+        word_end: 1,
+        start: 10,
+        end: 10.4,
+        text: "い",
+        speaker_ids: ["speaker_0"],
+      },
+    ],
+  };
+
+  assert.throws(
+    () => subtitlesFromAgentTranscript(transcript),
+    /zero_duration/,
+  );
 });
 
 test("subtitlesFromAgentTranscript rejects leftover glossary aliases", () => {

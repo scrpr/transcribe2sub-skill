@@ -66,6 +66,8 @@ export interface GlossaryEntry {
 type QaFlagCode =
   | "too_short"
   | "too_long"
+  | "zero_duration"
+  | "timing_span_mismatch"
   | "ends_mid_word"
   | "starts_mid_word"
   | "contains_mixed_raw_token"
@@ -175,6 +177,8 @@ const MIXED_TOKEN_LATIN_CHAR_DURATION = 0.12;
 const MIXED_TOKEN_OTHER_CHAR_DURATION = 0.16;
 const MIXED_TOKEN_MIN_CORE_DURATION = 0.12;
 const MIXED_TOKEN_MAX_CORE_DURATION = 0.72;
+const SUBTITLE_LEAD_IN = 0.18;
+const SUBTITLE_LEAD_OUT = 0.12;
 const SUBTITLE_END_GUARD = 0.04;
 const MIN_SUBTITLE_DISPLAY_DURATION = 0.5;
 const SHORT_TAIL_CLIP_MULTIPLIER = 2.6;
@@ -183,6 +187,7 @@ const SHORT_TAIL_CLIP_MAX_DURATION = 0.6;
 const SHORT_TAIL_CLIP_TRIGGER_RATIO = 3.5;
 const PUNCTUATION_TAIL_DISPLAY_DURATION = 0.18;
 const MAX_PUNCTUATION_TAIL_DISPLAY_DURATION = 0.24;
+const ZERO_DURATION_EPSILON = 0.001;
 const TRANSCRIBE_MAX_ATTEMPTS = 3;
 const TRANSCRIBE_RETRY_BASE_DELAY_MS = 1_000;
 const TRANSCRIBE_RETRY_JITTER_MS = 250;
@@ -716,6 +721,48 @@ function estimatedSpeechDuration(text: string): number {
   return clamp(duration, MIXED_TOKEN_MIN_CORE_DURATION, MIXED_TOKEN_MAX_CORE_DURATION);
 }
 
+function isExtremeShortTextDuration(text: string, duration: number): boolean {
+  const visibleChars = visibleSpeechCharCount(text);
+  if (visibleChars === 0) {
+    return false;
+  }
+  if (visibleChars <= 3) {
+    return duration > 6;
+  }
+  if (visibleChars <= 6) {
+    return duration > 10;
+  }
+  if (visibleChars <= 8) {
+    return duration > 14;
+  }
+  return false;
+}
+
+function hasAnomalousTimedToken(tokens: Token[]): boolean {
+  return tokens.some((token) => {
+    if (token.type !== "word" || isPunctuationOnlyToken(token) || visibleSpeechCharCount(token.text) === 0) {
+      return false;
+    }
+
+    if (visibleSpeechCharCount(token.text) > 2) {
+      return false;
+    }
+
+    const duration = token.end - token.start;
+    return duration >= Math.max(2.5, estimatedSpeechDuration(token.text) * 10);
+  });
+}
+
+function hasSevereTextSpanShrink(spanText: string, subtitleText: string): boolean {
+  const spanChars = visibleSpeechCharCount(spanText);
+  const subtitleChars = visibleSpeechCharCount(subtitleText);
+  if (subtitleChars === 0) {
+    return false;
+  }
+
+  return spanChars >= 6 && spanChars >= Math.max(subtitleChars * 2, subtitleChars + 4);
+}
+
 function buildMixedWordPieces(word: Word, leading: string, core: string, trailing: string): Word[] {
   const totalDuration = Math.max(0, word.end - word.start);
   const leadingChars = textLength(leading);
@@ -1041,6 +1088,15 @@ function findNextTimedTokenAfter(tokens: Token[], tokenIndex: number): Token | u
   return undefined;
 }
 
+function findPreviousTimedTokenBefore(tokens: Token[], tokenIndex: number): Token | undefined {
+  for (let i = tokenIndex - 1; i >= 0; i--) {
+    if (tokens[i] && tokens[i].type !== "spacing") {
+      return tokens[i];
+    }
+  }
+  return undefined;
+}
+
 function median(values: number[]): number | null {
   if (values.length === 0) {
     return null;
@@ -1178,7 +1234,21 @@ function resolveTimedRange(tokens: Token[], tokenStart: number, tokenEnd: number
     throw new Error(`字幕范围 ${tokenStart}-${tokenEnd} 不包含可计时 token`);
   }
 
-  return { start: first.start, end: resolveSubtitleEnd(tokens, tokenEnd, first.start, timedTokens) };
+  const rawStart = first.start;
+  const rawEnd = resolveSubtitleEnd(tokens, tokenEnd, rawStart, timedTokens);
+  const previousTimedToken = findPreviousTimedTokenBefore(tokens, tokenStart);
+  const nextTimedToken = findNextTimedTokenAfter(tokens, tokenEnd);
+  const paddedStartLowerBound = previousTimedToken
+    ? Math.min(rawStart, previousTimedToken.end + SUBTITLE_END_GUARD)
+    : 0;
+  const paddedEndUpperBound = nextTimedToken
+    ? Math.max(rawEnd, nextTimedToken.start - SUBTITLE_END_GUARD)
+    : Number.POSITIVE_INFINITY;
+
+  return {
+    start: clamp(rawStart - SUBTITLE_LEAD_IN, paddedStartLowerBound, rawStart),
+    end: clamp(rawEnd + SUBTITLE_LEAD_OUT, rawEnd, paddedEndUpperBound),
+  };
 }
 
 function toSubtitle(tokens: Token[], tokenStart: number, tokenEnd: number, index: number, textOverride?: string): Subtitle {
@@ -1431,7 +1501,38 @@ function speakerSetsOverlap(left: string[], right: string[]): boolean {
   return left.some((speakerId) => right.includes(speakerId));
 }
 
-function canMergeSubtitles(tokens: Token[], left: Subtitle, right: Subtitle, policy: SegmentationPolicy): boolean {
+function flashCueMergeDurationLimit(policy: SegmentationPolicy): number {
+  return Math.max(policy.hardDuration + 8, policy.hardDuration * 1.8);
+}
+
+function flashCueMergeCharLimit(policy: SegmentationPolicy): number {
+  return Math.max(policy.hardChars + 6, Math.round(policy.hardChars * 1.25));
+}
+
+function hasForbiddenBoundary(tokens: Token[], left: Subtitle, right: Subtitle): boolean {
+  const lastTimedToken = [...tokens.slice(left.tokenStart, left.tokenEnd + 1)].reverse().find((token) => token.type !== "spacing");
+  const firstTimedToken = tokens.slice(right.tokenStart, right.tokenEnd + 1).find((token) => token.type !== "spacing");
+  if (!lastTimedToken || !firstTimedToken) {
+    return false;
+  }
+
+  const boundary = buildBoundaryInfo(
+    lastTimedToken,
+    firstTimedToken,
+    Math.max(0, firstTimedToken.start - lastTimedToken.end),
+    Boolean(lastTimedToken.speaker_id && firstTimedToken.speaker_id && lastTimedToken.speaker_id !== firstTimedToken.speaker_id),
+  );
+
+  return boundary.isForbidden;
+}
+
+function canMergeSubtitles(
+  tokens: Token[],
+  left: Subtitle,
+  right: Subtitle,
+  policy: SegmentationPolicy,
+  options: { relaxedForFlashCue?: boolean } = {},
+): boolean {
   if (!speakerSetsOverlap(left.speakerIds, right.speakerIds)) {
     return false;
   }
@@ -1440,7 +1541,9 @@ function canMergeSubtitles(tokens: Token[], left: Subtitle, right: Subtitle, pol
   }
 
   const merged = toSubtitle(tokens, left.tokenStart, right.tokenEnd, 0);
-  if (textLength(merged.text) > policy.hardChars || merged.end - merged.start > policy.hardDuration) {
+  const charLimit = options.relaxedForFlashCue ? flashCueMergeCharLimit(policy) : policy.hardChars;
+  const durationLimit = options.relaxedForFlashCue ? flashCueMergeDurationLimit(policy) : policy.hardDuration;
+  if (textLength(merged.text) > charLimit || merged.end - merged.start > durationLimit) {
     return false;
   }
 
@@ -1464,6 +1567,41 @@ function scoreMergedSubtitle(subtitle: Subtitle, policy: SegmentationPolicy): nu
   return scoreRangeAgainstPolicy(textLength(subtitle.text), subtitle.end - subtitle.start, policy);
 }
 
+function isFlashCue(subtitle: Subtitle, policy: SegmentationPolicy): boolean {
+  const chars = textLength(subtitle.text);
+  const duration = subtitle.end - subtitle.start;
+  return chars <= 2 || duration < 0.75 || (chars <= 4 && duration < 1.0);
+}
+
+function canSplitOversizedSubtitle(subtitle: Subtitle, policy: SegmentationPolicy): boolean {
+  return textLength(subtitle.text) > policy.hardChars || subtitle.end - subtitle.start > policy.hardDuration;
+}
+
+function splitOversizedSubtitle(tokens: Token[], subtitle: Subtitle, policy: SegmentationPolicy): Subtitle[] | null {
+  if (!canSplitOversizedSubtitle(subtitle, policy)) {
+    return null;
+  }
+
+  const refs = buildTimedTokenRefs(tokens).filter(
+    (ref) => ref.tokenIndex >= subtitle.tokenStart && ref.tokenIndex <= subtitle.tokenEnd,
+  );
+  if (refs.length < 2) {
+    return null;
+  }
+
+  const allowForbidden = textLength(subtitle.text) > flashCueMergeCharLimit(policy)
+    || subtitle.end - subtitle.start > flashCueMergeDurationLimit(policy);
+  const splitIndex = findBestSplitRefIndex(tokens, refs, 0, refs.length - 1, policy, allowForbidden);
+  if (splitIndex === null || splitIndex >= refs.length - 1) {
+    return null;
+  }
+
+  return [
+    toSubtitle(tokens, refs[0]!.tokenIndex, refs[splitIndex]!.tokenIndex, 0),
+    toSubtitle(tokens, refs[splitIndex + 1]!.tokenIndex, refs.at(-1)!.tokenIndex, 0),
+  ];
+}
+
 function rebalanceSubtitles(tokens: Token[], subtitles: Subtitle[], policy: SegmentationPolicy): Subtitle[] {
   const queue = [...subtitles];
   let changed = true;
@@ -1477,10 +1615,55 @@ function rebalanceSubtitles(tokens: Token[], subtitles: Subtitle[], policy: Segm
         continue;
       }
 
-      const chars = textLength(current.text);
-      const duration = current.end - current.start;
-      const isFlashCue = chars <= 2 || duration < policy.minDuration || (chars <= 4 && duration < 0.75);
-      if (!isFlashCue) {
+      const split = splitOversizedSubtitle(tokens, current, policy);
+      if (!split) {
+        continue;
+      }
+
+      queue.splice(index, 1, ...split);
+      changed = true;
+      break;
+    }
+
+    if (changed) {
+      continue;
+    }
+
+    for (let index = 0; index < queue.length - 1; index++) {
+      const current = queue[index];
+      const next = queue[index + 1];
+      if (!current || !next) {
+        continue;
+      }
+
+      const stronglyUnbalanced = Math.abs((current.end - current.start) - (next.end - next.start)) > policy.softDuration;
+      const repairableBoundary = hasForbiddenBoundary(tokens, current, next) || stronglyUnbalanced;
+      if (!repairableBoundary) {
+        continue;
+      }
+      if (!isFlashCue(current, policy) && !isFlashCue(next, policy) && !stronglyUnbalanced) {
+        continue;
+      }
+      if (!canMergeSubtitles(tokens, current, next, policy, { relaxedForFlashCue: true })) {
+        continue;
+      }
+
+      queue.splice(index, 2, toSubtitle(tokens, current.tokenStart, next.tokenEnd, 0));
+      changed = true;
+      break;
+    }
+
+    if (changed) {
+      continue;
+    }
+
+    for (let index = 0; index < queue.length; index++) {
+      const current = queue[index];
+      if (!current) {
+        continue;
+      }
+
+      if (!isFlashCue(current, policy)) {
         continue;
       }
 
@@ -1488,12 +1671,12 @@ function rebalanceSubtitles(tokens: Token[], subtitles: Subtitle[], policy: Segm
       const right = index < queue.length - 1 ? queue[index + 1] : undefined;
       const candidates: Array<{ direction: "left" | "right"; merged: Subtitle; score: number }> = [];
 
-      if (left && canMergeSubtitles(tokens, left, current, policy)) {
+      if (left && canMergeSubtitles(tokens, left, current, policy, { relaxedForFlashCue: true })) {
         const merged = toSubtitle(tokens, left.tokenStart, current.tokenEnd, 0);
         candidates.push({ direction: "left", merged, score: scoreMergedSubtitle(merged, policy) });
       }
 
-      if (right && canMergeSubtitles(tokens, current, right, policy)) {
+      if (right && canMergeSubtitles(tokens, current, right, policy, { relaxedForFlashCue: true })) {
         const merged = toSubtitle(tokens, current.tokenStart, right.tokenEnd, 0);
         candidates.push({ direction: "right", merged, score: scoreMergedSubtitle(merged, policy) });
       }
@@ -1618,6 +1801,37 @@ function dedupeQaFlags(flags: QaFlag[]): QaFlag[] {
   return result;
 }
 
+function collectRangeConsistencyFlags(tokens: Token[], subtitle: Subtitle): QaFlag[] {
+  const flags: QaFlag[] = [];
+  const timedTokens = tokens.slice(subtitle.tokenStart, subtitle.tokenEnd + 1).filter((token) => token.type !== "spacing");
+  const rawDuration = timedTokens.length > 0
+    ? timedTokens[timedTokens.length - 1]!.end - timedTokens[0]!.start
+    : 0;
+  const duration = subtitle.end - subtitle.start;
+
+  if (rawDuration <= ZERO_DURATION_EPSILON || duration <= ZERO_DURATION_EPSILON) {
+    flags.push({
+      code: "zero_duration",
+      severity: "error",
+      message: "该字幕时长为 0 或接近 0，必须调整 token range。",
+    });
+  }
+
+  const spanText = renderTokenRange(tokens, subtitle.tokenStart, subtitle.tokenEnd);
+  if (
+    hasSevereTextSpanShrink(spanText, subtitle.text)
+    || (isExtremeShortTextDuration(subtitle.text, duration) && hasAnomalousTimedToken(timedTokens))
+  ) {
+    flags.push({
+      code: "timing_span_mismatch",
+      severity: "error",
+      message: "该字幕的 token range 对当前文本明显过宽或时长异常，建议收紧、拆分或重新分配边界。",
+    });
+  }
+
+  return flags;
+}
+
 function collectSubtitleQaFlags(
   tokens: Token[],
   subtitles: Subtitle[],
@@ -1633,6 +1847,7 @@ function collectSubtitleQaFlags(
   for (const [index, subtitle] of subtitles.entries()) {
     const chars = textLength(subtitle.text);
     const duration = subtitle.end - subtitle.start;
+    flagsBySubtitle[index]?.push(...collectRangeConsistencyFlags(tokens, subtitle));
 
     if (chars < policy.minReadableChars || duration < policy.minDuration) {
       flagsBySubtitle[index]?.push({
@@ -1976,6 +2191,8 @@ function parseQaFlag(value: unknown): QaFlag {
   if (
     code !== "too_short"
     && code !== "too_long"
+    && code !== "zero_duration"
+    && code !== "timing_span_mismatch"
     && code !== "ends_mid_word"
     && code !== "starts_mid_word"
     && code !== "contains_mixed_raw_token"
@@ -2095,6 +2312,13 @@ export function subtitlesFromAgentTranscript(data: AgentTranscript): Subtitle[] 
     }
 
     const built = toSubtitle(tokens, subtitle.token_start, subtitle.token_end, index + 1, subtitle.text);
+    const consistencyFlags = collectRangeConsistencyFlags(tokens, built).filter((flag) => flag.severity === "error");
+    if (consistencyFlags.length > 0) {
+      throw new Error(
+        `字幕 ${index + 1} 的 token range 与文本/时长不一致: ${consistencyFlags.map((flag) => flag.code).join(", ")} (${built.text})`,
+      );
+    }
+
     for (const ref of timedRefs) {
       if (ref.tokenIndex < subtitle.token_start || ref.tokenIndex > subtitle.token_end) {
         continue;
