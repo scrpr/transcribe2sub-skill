@@ -9,6 +9,9 @@ Use this skill as a quality-first subtitle workflow, not a raw ASR dump.
 
 ## Default Strategy
 
+- Use two subagents by default for agentic runs:
+  - Subagent 1: transcription/build agent. Its job is only to run the script, generate or rebuild `<stem>.review.json`, and preserve raw artifacts.
+  - Subagent 2: review/QA agent. Its job is only to inspect `qa_flags`, fix segmentation/timing/text issues inside the editable JSON, and save `<stem>.corrected.json`.
 - Prefer `json -> review -> corrected json -> srt`.
 - Preserve the raw ElevenLabs response JSON on the first API run, then prefer `raw json -> review json -> corrected json -> srt` for later iterations.
 - Use direct SRT output only when the user explicitly wants a fast draft or a raw first pass.
@@ -17,9 +20,11 @@ Use this skill as a quality-first subtitle workflow, not a raw ASR dump.
 ## Required
 
 - On the first run after the skill is installed, request approval if needed and run `cd skills/transcribe2sub && pnpm install` before invoking the script.
+- For agentic work, explicitly split responsibilities across two subagents instead of letting one agent both transcribe and review.
 - Prefer the review workflow by default: generate editable JSON first, review it, save the reviewed file as `<stem>.corrected.json`, then render SRT.
 - Prefer naming the machine draft as `<stem>.review.json`; this keeps the generated review draft, the reviewed output, and the raw cache aligned.
 - During review, inspect `subtitles[].qa_flags`, `review.normalization_diagnostics`, `glossary.entries`, `glossary.candidates`, and `glossary.collected` before exporting.
+- During review, run a full QA sweep before and after edits; treat every error-level `qa_flag` as a must-fix item, not a suggestion.
 - Keep every non-`spacing` token covered exactly once.
 - Keep the spoken meaning faithful unless the user explicitly asks for condensation, cleanup, or translation.
 - Use `subtitles[].text` for obvious ASR correction, punctuation cleanup, terminology unification, and line-break polish within the same token span.
@@ -54,6 +59,11 @@ Use this skill as a quality-first subtitle workflow, not a raw ASR dump.
 ## Quality-First Workflow
 
 1. Generate editable JSON instead of direct SRT.
+
+   Ownership:
+
+   - Subagent 1 owns this step. It prepares inputs, runs the script, preserves `<stem>.elevenlabs.json`, and outputs `<stem>.review.json`.
+   - Subagent 1 does not review or hand-edit the subtitle content except for operational recovery steps explicitly requested by the user.
 
    Naming convention:
 
@@ -95,6 +105,11 @@ Use this skill as a quality-first subtitle workflow, not a raw ASR dump.
 
    Save the reviewed file as `<stem>.corrected.json`, for example `episode.corrected.json`.
 
+   Ownership:
+
+   - Subagent 2 owns this step. It reads `<stem>.review.json`, performs review and QA, and saves `<stem>.corrected.json`.
+   - Subagent 2 must not re-run transcription or regenerate the draft unless the user explicitly asks to restart from raw audio or raw JSON.
+
    - Edit only `subtitles[].token_start`, `subtitles[].token_end`, `subtitles[].text`, `glossary.candidates`, and `glossary.collected`.
    - During correction, let the review LLM extract candidate terms into `glossary.candidates`.
    - Use `subtitles[].text` to correct obvious ASR misrecognitions within the same timed span.
@@ -102,11 +117,18 @@ Use this skill as a quality-first subtitle workflow, not a raw ASR dump.
    - Use `glossary.candidates` as review-stage staging data only; do not treat them as final until they are copied into `glossary.collected`.
    - Add newly discovered people names, products, brands, organizations, or domain terms to `glossary.collected`.
    - Prioritize `qa_flags` and `review.normalization_diagnostics` before spending time on fine-grained polish.
+   - For `zero_duration`, `timing_span_mismatch`, `too_short`, `too_long`, `ends_mid_word`, and `starts_mid_word`, adjust token boundaries first; do not try to polish text around a broken span.
+   - Even when `qa_flags` are sparse, actively inspect for flash cues, short text hanging too long, unnatural joins across full sentences, and cross-speaker merges.
    - Treat `subtitles[].start`, `subtitles[].end`, `word_*`, and `speaker_ids` as derived preview fields.
    - Never edit `tokens[].id`, `tokens[].start`, `tokens[].end`, `tokens[].type`, or `tokens[].speaker_id`.
    - Ensure every non-`spacing` token belongs to exactly one subtitle.
+   - After all edits, do a second pass over the whole file and confirm no obvious QA issue remains before exporting.
 
 3. Render the corrected JSON back to SRT.
+
+   Ownership:
+
+   - Either the main agent or Subagent 1 may render after Subagent 2 finishes review, but only after checking that the corrected JSON is the latest reviewed artifact.
 
    ```bash
    cd skills/transcribe2sub
@@ -136,11 +158,14 @@ Use this skill as a quality-first subtitle workflow, not a raw ASR dump.
 
 ## Final Checks
 
+- Confirm the handoff between Subagent 1 and Subagent 2 is clean: draft JSON preserved, corrected JSON written separately, and raw cache retained.
 - Leave no empty subtitle.
 - Drop or duplicate no timed token.
 - Resolve obvious ASR errors before exporting.
+- Re-read the whole subtitle list once after edits instead of stopping after local fixes.
 - Promote useful `glossary.candidates` into `glossary.collected` or delete them during review.
 - Make person names, brand names, and domain terms consistent with `glossary.entries` and `glossary.collected`.
+- Confirm no error-level `qa_flags` remain unaddressed and that warning-level flags were consciously reviewed.
 - Make subtitle text read naturally in the target language.
 - Confirm rendered timing matches the final token span.
 - Return SRT unless the user explicitly asks to keep JSON.

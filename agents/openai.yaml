@@ -1,4 +1,4 @@
 interface:
   display_name: "Transcribe to Subtitles"
   short_description: "Create accurate, terminology-consistent subtitles"
-  default_prompt: "Use $transcribe2sub as a quality-first workflow: prefer JSON review before SRT, save the machine draft as <stem>.review.json and the reviewed file as <stem>.corrected.json, inspect qa_flags and glossary state, keep full token coverage, and never edit read-only token fields unless the user explicitly wants a fast draft."
+  default_prompt: "Use $transcribe2sub as a two-subagent workflow by default: Subagent 1 handles transcription/rebuild only and produces <stem>.review.json plus raw artifacts; Subagent 2 handles review and QA only and writes <stem>.corrected.json. Prefer JSON review before SRT, run a full QA sweep before and after edits, treat error-level qa_flags as must-fix issues, actively look for flash cues / overlong spans / timing-span mismatches even when qa_flags are absent, keep full token coverage, and never edit read-only token fields unless the user explicitly wants a fast draft."

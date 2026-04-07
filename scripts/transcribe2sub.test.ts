@@ -600,6 +600,12 @@ test("formatAgentJSON emits correction and glossary metadata", () => {
   assert.equal(json.review.require_term_consistency, true);
   assert.deepEqual(json.glossary.entries, [{ canonical: "OpenAI", aliases: ["Open AI"] }]);
   assert.deepEqual(json.glossary.candidates, []);
+  assert.ok(json.review.checklist.some((line) => line.includes("review/QA 子 agent")));
+  assert.ok(json.review.checklist.some((line) => line.includes("完整检查 subtitles[].qa_flags")));
+  assert.ok(json.review.checklist.some((line) => line.includes("完成修改后再做一轮从头到尾 QA")));
+  assert.ok(json.instructions.some((line) => line.includes("第二个子 agent")));
+  assert.ok(json.instructions.some((line) => line.includes("先做一轮完整 QA")));
+  assert.ok(json.instructions.some((line) => line.includes("第二轮 QA")));
   assert.ok(json.instructions.some((line) => line.includes("完整句子、从句或自然停顿")));
   assert.ok(json.instructions.some((line) => line.includes("按 token range 重算")));
   assert.ok(json.instructions.some((line) => line.includes("ASR 错词")));

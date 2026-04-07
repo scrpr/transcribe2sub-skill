@@ -201,12 +201,17 @@ const RETRYABLE_TRANSCRIBE_ERROR_CODES = new Set([
   "UND_ERR_SOCKET",
 ]);
 const DEFAULT_REVIEW_CHECKLIST = [
+  "本 JSON 默认交给 review/QA 子 agent 处理；转录和原始草稿生成应由独立的转录子 agent 负责。",
+  "导出前先完整检查 subtitles[].qa_flags 与 review.normalization_diagnostics，把每个 error 级问题都当成必须处理的待办。",
   "修正明显的 ASR 错词、同音误识别和专有名词拼写错误。",
   "在纠正 ASR 错词的同时，抽取人名、品牌名、产品名、地名和领域术语。",
   "先把待确认术语写入 glossary.candidates，再把确认过的 canonical 写法写入 glossary.collected。",
   "发现新术语时，将 canonical 写法记录到 glossary.collected，必要时补充 aliases。",
   "对重复出现的人名、队名、作品名和系列名，优先统一 canonical 写法；不确定时保留原文并留在 glossary.candidates。",
+  "对 zero_duration、timing_span_mismatch、too_short、too_long、ends_mid_word、starts_mid_word，优先通过调整 token range 修复，再做文字润色。",
+  "即使没有 qa_flags，也要主动巡检 flash cue、长时长短文本、跨完整句、跨说话人和异常停顿。",
   "保持每条字幕的 token range 连续、完整且不重叠。",
+  "完成修改后再做一轮从头到尾 QA，确认没有空字幕、零时长、遗漏 token 或明显不自然的断句。",
 ] as const;
 
 function fail(message: string): never {
@@ -1802,11 +1807,16 @@ export function formatAgentJSON(
     review,
     glossary,
     instructions: [
+      "你是第二个子 agent，也就是 review/QA agent；转录、重跑 raw JSON、保存机器初稿这些工作应由独立的转录子 agent 完成。",
       "先保证转写内容忠实和时间轴准确，再优化断句、标点和可读性。",
+      "先做一轮完整 QA：从头到尾检查 subtitles[].qa_flags 和 review.normalization_diagnostics，不要只修眼前这一条。",
+      "把 error 级 qa_flags 当成必须消除的问题；对 warning 级 qa_flags 也要逐条判断是否需要修复，而不是默认忽略。",
       "允许在 subtitles[].text 中修正明显的 ASR 错词、同音误识别和术语拼写错误，但不要脱离当前 token range 总结或扩写。",
       "在纠正 ASR 错词的同时，主动抽取人名、品牌名、产品名、地名和领域术语，先写入 glossary.candidates，再把确认过的 canonical 写法写入 glossary.collected。",
       "优先使用 glossary.entries 与 glossary.collected 中的 canonical 写法；glossary.candidates 只是 review 阶段的暂存区。",
-      "如果字幕上带有 qa_flags，优先处理 ends_mid_word / starts_mid_word / contains_mixed_raw_token / glossary_unresolved 这些提示。",
+      "如果字幕上带有 qa_flags，优先处理 zero_duration / timing_span_mismatch / ends_mid_word / starts_mid_word / too_short / too_long / contains_mixed_raw_token / glossary_unresolved 这些提示。",
+      "对 zero_duration、timing_span_mismatch、too_short、too_long，先检查 token_start / token_end 是否需要收紧、拆分、合并或移动，再处理文字。",
+      "即使没有 qa_flags，也要主动寻找过短闪 cue、过长挂屏、短文本配超长时间、跨完整句和跨 speaker change 的问题。",
       "优先让每条字幕对应完整句子、从句或自然停顿；不要跨 speaker change 强行合并。",
       "只修改 subtitles[].token_start、subtitles[].token_end、subtitles[].text。",
       "不要修改 tokens[].id、tokens[].start、tokens[].end、tokens[].type、tokens[].speaker_id。",
@@ -1815,6 +1825,7 @@ export function formatAgentJSON(
       "subtitles[].text 是最终展示文本，可修正错词、标点、大小写和换行，并保持术语前后一致。",
       "对重复出现的人名、队名、作品名和系列名，先写入 glossary.candidates；确认后再提升到 glossary.collected。",
       "术语不确定时不要猜，保留原文并让 glossary.candidates 或 qa_flags 标出待确认项。",
+      "完成修改后再做第二轮 QA，重新检查整份字幕是否还存在 flash cue、零时长、跨度失真、漏词、重复覆盖或明显不自然的断句。",
     ],
     tokens,
     subtitles: subtitles.map((subtitle, index) => toJsonSubtitle(subtitle, qaFlags[index] ?? [])),
