@@ -1,173 +1,206 @@
 ---
 name: transcribe2sub
-description: "Subtitle production workflow for generating, rebuilding, reviewing, QAing, optimizing, or rendering SRT subtitles from audio/video files, raw ElevenLabs JSON, .review.json, .corrected.json, or existing SRT drafts. Use this skill for 音频/视频转字幕, mp4/wav/audio-to-SRT, 中文字幕 SRT, quick draft.srt, review JSON, corrected JSON, semantic subtitle segmentation, accurate timing, token-range editing, token coverage, zero_duration, ASR cleanup, glossary aliases, term consistency, and JSON-to-SRT round-tripping. Always prefer this skill for subtitle file work beyond a plain explanation or unrelated code task."
+description: "Subagent-based subtitle production workflow for generating, rebuilding, structurally QAing, text-reviewing, and rendering high-quality SRT subtitles from audio/video files, ElevenLabs raw JSON, .review.json, .segmented.json, .corrected.json, or existing SRT drafts. Use this skill for audio/video-to-SRT, Chinese/Japanese/English subtitles, review JSON, corrected JSON, semantic segmentation, token-range editing, qa_flags, zero_duration, ASR cleanup, homophone fixes, proper nouns, glossary aliases, terminology consistency, and JSON-to-SRT round-tripping. Always prefer this skill for subtitle file work beyond plain explanation or unrelated code tasks."
 ---
 
 # transcribe2sub
 
-Use this skill as a quality-first subtitle workflow, not as a raw ASR dump.
+Use this skill as a quality-first subtitle production pipeline, not as a one-pass ASR dump. The default handoff is `review json -> segmented json -> corrected json -> srt`: build the machine draft first, fix structural/timing issues second, fix text quality third, then render and validate.
 
-## Default Strategy
+## Subagent Operating Model
 
-- Use two separate responsibilities for agentic runs:
-  - Transcription/build: run the script, generate or rebuild `<stem>.review.json`, and preserve raw artifacts.
-  - Review/QA: inspect `qa_flags`, fix segmentation/timing/text issues inside the editable JSON, and save `<stem>.corrected.json`.
-- When subagents are available, use separate subagents for those responsibilities. In Codex or other environments without real subagents, simulate the separation as two explicit phases: finish and save the draft first, then reopen the draft for review in a separate pass.
-- Prefer `json -> review -> corrected json -> srt`.
-- Preserve the raw ElevenLabs response JSON on the first API run, then prefer `raw json -> review json -> corrected json -> srt` for later iterations.
-- Use direct SRT output only when the user explicitly wants a fast draft or a raw first pass.
-- Optimize in this order: transcript fidelity -> timing fidelity -> semantic segmentation -> readability polish.
+- Use separate responsibilities for `Coordinator`, `Transcription Builder`, `Structural QA`, `Text QA`, and `Render Validate`.
+- When real subagents are available, assign each role to a separate subagent.
+- When real subagents are unavailable, simulate separation as explicit passes: finish and save one artifact before starting the next pass.
+- Each subagent edits only its owned artifact and fields. If a problem belongs to another role, hand it back through the Coordinator instead of guessing across boundaries.
+- Optimize in this order: transcript fidelity -> timing fidelity -> segmentation -> text consistency -> readability polish.
+
+## Artifact Contract
+
+- Machine draft: `<stem>.review.json`.
+- Structurally adjusted draft: `<stem>.segmented.json`.
+- Text-reviewed output: `<stem>.corrected.json`.
+- Raw cache: `<basename>.elevenlabs.json`, derived from the main output path without its extension. For `episode.review.json`, the default cache is `episode.review.elevenlabs.json`.
+- Final delivery: `.srt`, rendered from `<stem>.corrected.json` unless the user explicitly requests a lower-quality fast draft.
+
+## Role: Coordinator
+
+The Coordinator routes inputs and enforces clean handoffs. It does not directly edit subtitle content, token ranges, timestamps, or glossary data.
+
+- Classify the user input: audio/video, ElevenLabs raw JSON, `.review.json`, `.segmented.json`, `.corrected.json`, existing SRT draft, or fast-draft request.
+- Choose the route and assign roles in this order whenever quality matters: `Transcription Builder -> Structural QA -> Text QA -> Render Validate`.
+- Confirm input paths, output names, glossary path, segmentation settings, and whether the user explicitly accepts fast-draft quality.
+- Ensure every handoff artifact exists and follows the naming contract.
+- Route failures back to the owning role: structural/timing/token issues go to Structural QA; ASR/text/glossary issues go to Text QA; command/render failures go to Render Validate or Transcription Builder as appropriate.
+
+## Role: Transcription Builder
+
+The Transcription Builder only generates or rebuilds machine-reviewable JSON.
+
+- Confirm `ffmpeg` is available.
+- On first practical use after installation, run `pnpm install` from the skill root if dependencies are missing. Request approval first when the environment blocks installation.
+- For first-time audio/video processing, run ElevenLabs STT and preserve the raw response JSON.
+- For repeated processing of the same media, prefer `--from-raw-json` instead of re-uploading audio.
+- Output `<stem>.review.json` and preserve `<basename>.elevenlabs.json`.
+- Pass `--glossary` during generation when the user provides a glossary, so `glossary.entries` is present in the review JSON.
+- Do not review, polish, resegment manually, or edit `subtitles[]`. Only handle operational recovery such as missing paths, command failures, or dependency issues.
+
+CJK baseline:
+
+```bash
+pnpm tsx scripts/transcribe2sub.ts <audio> --format json --max-chars 22 --max-duration 8.0 -o episode.review.json
+```
+
+Spaced-language baseline:
+
+```bash
+pnpm tsx scripts/transcribe2sub.ts <audio> --format json --max-chars 38 --max-duration 4.0 -o episode.review.json
+```
+
+With a user glossary:
+
+```bash
+pnpm tsx scripts/transcribe2sub.ts <audio> --format json --glossary glossary.txt -o episode.review.json
+```
+
+Rebuild from saved raw JSON:
+
+```bash
+pnpm tsx scripts/transcribe2sub.ts --from-raw-json episode.review.elevenlabs.json --format json --glossary glossary.txt -o episode.review.json
+```
+
+## Role: Structural QA
+
+Structural QA owns non-text subtitle correctness: token coverage, timing, segmentation, and script-generated QA flags. Its output is `<stem>.segmented.json`.
+
+- Input `<stem>.review.json`; output `<stem>.segmented.json`.
+- Inspect `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
+- Treat every error-level `qa_flag` as a must-fix issue. Review warning-level flags deliberately instead of ignoring them.
+- Fix `zero_duration`, `timing_span_mismatch`, `too_short`, `too_long`, `ends_mid_word`, `starts_mid_word`, and `contains_mixed_raw_token` before text polish begins.
+- Actively inspect for flash cues, short text held too long, oversized cues, unnatural joins across complete sentences, cross-speaker merges, and abnormal pauses even when no flag is present.
+- Prefer token-boundary changes for structural defects. Let token ranges determine timing; never hand-edit preview timestamps.
+- Break at complete sentences, clauses, pauses, and speaker changes. Do not split inside a tightly bound phrase only to satisfy a character limit.
+- Merge adjacent cues only when speaker continuity, pause length, duration, and character limits remain acceptable.
+- If cues are merged, preserve original token/cue order. Do not rewrite the text into a more natural or literary word order.
+- Edit only `subtitles[].token_start`, `subtitles[].token_end`, and the minimum `subtitles[].text` synchronization needed after range changes.
+- Do not correct ASR mistakes, homophones, proper nouns, spelling, punctuation style, casing, line breaks, or glossary consistency unless required to keep text aligned after a range change.
+- Never edit `tokens[].id`, `tokens[].start`, `tokens[].end`, `tokens[].type`, or `tokens[].speaker_id`.
+- Never hand-edit `subtitles[].start`, `subtitles[].end`, `word_*`, or `speaker_ids`; they are derived preview fields.
+- Ensure every non-`spacing` token belongs to exactly one subtitle.
+- If a structural fix requires semantic judgment about wording, hand off to Text QA after preserving a valid token range.
+
+## Role: Text QA
+
+Text QA owns transcript fidelity and subtitle text quality after structural boundaries are stable. Its output is `<stem>.corrected.json`.
+
+- Input `<stem>.segmented.json`; output `<stem>.corrected.json`.
+- Review `subtitles[].text`, `glossary.entries`, `glossary.candidates`, and `glossary.collected` across the whole transcript.
+- Keep spoken meaning faithful unless the user explicitly asks for condensation, cleanup, or translation.
+- Correct obvious ASR lexical errors, homophone errors, proper nouns, domain terms, spelling, punctuation, casing, and line breaks when the current token span supports the correction.
+- Use `glossary.entries` as locked canonical terms from the user.
+- When the source video is a film, TV episode, drama, anime, or other narrative work, use web search when needed to confirm official character names, cast names, titles, organizations, locations, and proper-noun spellings before promoting canonical forms.
+- Extract names, brands, products, organizations, locations, and domain terms while reviewing. Put uncertain terms in `glossary.candidates`; promote confirmed canonical forms into `glossary.collected`.
+- Keep repeated people names, team names, work titles, product names, and domain terms consistent with `glossary.entries` and `glossary.collected`.
+- Proper noun and terminology corrections may only replace content already spoken inside the current token span or inside adjacent cues that were already merged by Structural QA.
+- Do not add an unstated name, subject, object, title, or explanation. If the spoken line only uses a generic form of address, keep it generic.
+- Do not reorder words or clauses while correcting names or merging punctuation. Preserve the original token/cue order.
+- Edit only `subtitles[].text`, `glossary.candidates`, and `glossary.collected`.
+- Do not adjust token ranges. If the current token range prevents a faithful text correction, return the file to Structural QA with the exact cue and reason.
+- Do not edit `tokens[]`, derived timestamp preview fields, `word_*`, or `speaker_ids`.
+
+## Role: Render Validate
+
+Render Validate only renders the final reviewed JSON and checks delivery risk.
+
+- Input the latest `<stem>.corrected.json`; never render final SRT directly from `<stem>.review.json` or `<stem>.segmented.json`.
+- Run JSON-to-SRT rendering.
+- If validation fails, route the issue back by type: token/timing/coverage failures to Structural QA; text/glossary failures to Text QA; command or dependency failures to the operational owner.
+- Confirm the final SRT came from corrected JSON, not from a direct draft.
+- Confirm no empty subtitle, obvious timing inversion, duplicated token coverage, or unresolved error-level QA issue remains.
+
+```bash
+pnpm tsx scripts/transcribe2sub.ts --from-json episode.corrected.json -o final.srt
+```
+
+## Workflow Routes
+
+### First Audio Or Video Processing
+
+1. Coordinator confirms input, output stem, glossary, segmentation settings, and quality target.
+2. Transcription Builder creates `<stem>.review.json` and `<basename>.elevenlabs.json`.
+3. Structural QA creates `<stem>.segmented.json`.
+4. Text QA creates `<stem>.corrected.json`.
+5. Render Validate creates the final SRT.
+
+### Rebuild From Raw ElevenLabs JSON
+
+1. Coordinator confirms the reusable `<basename>.elevenlabs.json`, glossary, and segmentation settings.
+2. Transcription Builder uses `--from-raw-json` to create a new `<stem>.review.json`.
+3. Structural QA creates `<stem>.segmented.json`.
+4. Text QA creates `<stem>.corrected.json`.
+5. Render Validate creates the final SRT.
+
+### Continue From Existing Review JSON
+
+1. Coordinator confirms the input is `.review.json`.
+2. Structural QA creates `.segmented.json`.
+3. Text QA creates `.corrected.json`.
+4. Render Validate renders from `.corrected.json`.
+
+### Continue From Existing Segmented JSON
+
+1. Coordinator confirms the input is `.segmented.json` and structural QA does not need to be repeated.
+2. Text QA creates `.corrected.json`.
+3. Render Validate renders from `.corrected.json`.
+
+### Render Existing Corrected JSON
+
+1. Coordinator confirms the input is `.corrected.json` and the user is not asking for further review.
+2. Render Validate runs `--from-json`.
+
+### Fast Draft Exception
+
+Only when the user explicitly prioritizes speed and accepts lower review quality, direct SRT output is allowed:
+
+```bash
+pnpm tsx scripts/transcribe2sub.ts <audio> -o draft.srt
+```
+
+## Field Ownership
+
+- Transcription Builder owns generated raw artifacts and `<stem>.review.json` creation.
+- Structural QA owns `subtitles[].token_start`, `subtitles[].token_end`, and minimal text synchronization caused by range changes.
+- Text QA owns `subtitles[].text`, `glossary.candidates`, and `glossary.collected`.
+- Render Validate owns SRT rendering and final delivery checks.
+- No subagent may edit `tokens[].id`, `tokens[].start`, `tokens[].end`, `tokens[].type`, `tokens[].speaker_id`, `subtitles[].start`, `subtitles[].end`, `word_*`, or `speaker_ids`.
 
 ## Required
 
-- On the first run after the skill is installed, request approval if needed, enter the skill root directory, and run `pnpm install` before invoking the script.
-- For agentic work, keep transcription/build separate from review/QA instead of letting one pass both generate and edit the transcript.
-- Prefer the review workflow by default: generate editable JSON first, review it, save the reviewed file as `<stem>.corrected.json`, then render SRT.
-- Name the machine draft `<stem>.review.json`; this keeps the generated review draft, reviewed output, and raw cache aligned.
-- During review, inspect `subtitles[].qa_flags`, `review.normalization_diagnostics`, `glossary.entries`, `glossary.candidates`, and `glossary.collected` before exporting.
-- During review, run a full QA sweep before and after edits; treat every error-level `qa_flag` as a must-fix item, not a suggestion.
-- Keep every non-`spacing` token covered exactly once.
-- Keep the spoken meaning faithful unless the user explicitly asks for condensation, cleanup, or translation.
-- Use `subtitles[].text` for obvious ASR correction, punctuation cleanup, terminology unification, and line-break polish within the same token span.
-- Correct names and terms only by replacing text that is already present in the current token span or adjacent cue being merged; do not insert a name, subject, object, or explanation that was not spoken in that span.
-- Cue merging is allowed, but merged text must preserve the original token/cue order.
-- Promote confirmed repeated terms into `glossary.collected`; keep uncertain terms in `glossary.candidates`.
-
-## Optional
-
-- Use `--glossary` when the user provides a term list or when terminology consistency matters.
-- Use `--from-raw-json` when rerunning the same media with different segmentation or glossary settings.
-- Emit direct SRT only when the user explicitly wants a draft and accepts lower review quality.
-- Tune `--max-chars` and `--max-duration` per language or density when the defaults do not fit the material.
-
-## Never
-
-- Never skip review and jump straight to SRT unless the user explicitly prioritizes speed over quality.
-- Never save the reviewed file as a generic `transcript.json`; reviewed outputs must end with `.corrected.json`.
-- Never edit `tokens[].id`, `tokens[].start`, `tokens[].end`, `tokens[].type`, or `tokens[].speaker_id`.
-- Never hand-edit `subtitles[].start`, `subtitles[].end`, `word_*`, or `speaker_ids`; they are derived preview fields.
-- Never treat `glossary.candidates` as locked truth before they are promoted into `glossary.collected`.
-- Never drop or duplicate timed tokens to make a subtitle read better.
-- Never expand a generic form of address into a specific name unless the name is actually present in the current token span or user-provided reference for that exact line. `先輩...` must not become `XX先輩...` just because the referent is known.
-- Never reorder words or clauses while correcting names or merging cues.
-
-## Prepare
-
-- Confirm `ffmpeg` is available.
-- If dependencies are not installed, enter the skill root directory and run `pnpm install`. If the environment blocks installation, request approval and rerun with elevated permissions.
-- Prefer `ELEVENLABS_API_KEY`; the script can fall back to unauthenticated mode when needed and now auto-enables diarization for that path.
-- Read `references/subtitle-quality.md` before regrouping or polishing subtitles.
+- Prefer the review pipeline over direct SRT for quality work.
+- Keep structural QA and text QA separate. Stabilize token ranges before text polish.
+- Preserve every non-`spacing` token exactly once across subtitles.
+- Preserve raw ElevenLabs JSON after first API processing and reuse it for later rebuilds.
+- Read `references/subtitle-quality.md` before regrouping, splitting, merging, or polishing subtitles.
 - Read `references/glossary-format.md` before creating or loading a user glossary.
 - Read `references/elevenlabs-stt-api.md` only when API field details matter.
 
-## Quality-First Workflow
+## Never
 
-1. Generate editable JSON instead of direct SRT.
-
-   Ownership:
-
-   - The transcription/build pass owns this step. It prepares inputs, runs the script, preserves `<basename>.elevenlabs.json`, and outputs `<stem>.review.json`.
-   - This pass does not review or hand-edit subtitle content except for operational recovery steps explicitly requested by the user.
-
-   Naming convention:
-
-   - Machine draft: `<stem>.review.json`
-   - Raw cache: `<basename>.elevenlabs.json`, derived from the main output path without its extension. For `episode.review.json`, the default cache is `episode.review.elevenlabs.json`.
-   - Reviewed output: `<stem>.corrected.json`
-
-   The script saves the raw ElevenLabs response alongside the main output by default as `<basename>.elevenlabs.json`, where `<basename>` is the main output filename without its extension.
-
-   CJK baseline:
-
-   ```bash
-   pnpm tsx scripts/transcribe2sub.ts <audio> --format json --max-chars 22 --max-duration 8.0 -o episode.review.json
-   ```
-
-   Spaced-language baseline:
-
-   ```bash
-   pnpm tsx scripts/transcribe2sub.ts <audio> --format json --max-chars 38 --max-duration 4.0 -o episode.review.json
-   ```
-
-   If the user provides a term list, pass it in at generation time:
-
-   ```bash
-   pnpm tsx scripts/transcribe2sub.ts <audio> --format json --glossary glossary.txt -o episode.review.json
-   ```
-
-   Later, rebuild from the saved raw JSON without calling the API again:
-
-   ```bash
-   pnpm tsx scripts/transcribe2sub.ts --from-raw-json episode.review.elevenlabs.json --format json --glossary glossary.txt -o episode.review.json
-   ```
-
-2. Review `subtitles[]` against the quality rubric.
-
-   Save the reviewed file as `<stem>.corrected.json`, for example `episode.corrected.json`.
-
-   Ownership:
-
-   - The review/QA pass owns this step. It reads `<stem>.review.json`, performs review and QA, and saves `<stem>.corrected.json`.
-   - This pass must not re-run transcription or regenerate the draft unless the user explicitly asks to restart from raw audio or raw JSON.
-
-   - Edit only `subtitles[].token_start`, `subtitles[].token_end`, `subtitles[].text`, `glossary.candidates`, and `glossary.collected`.
-   - During correction, extract candidate terms into `glossary.candidates`, but do not let candidates authorize inserting new spoken content.
-   - Use `subtitles[].text` to correct obvious ASR misrecognitions within the same timed span.
-   - Use `glossary.entries` as locked canonical terms from the user.
-   - Use `glossary.candidates` as review-stage staging data only; do not treat them as final until they are copied into `glossary.collected`.
-   - Add newly discovered people names, products, brands, organizations, or domain terms to `glossary.collected`.
-   - If a generic address was spoken, keep it generic. Knowing who it refers to is not enough to add their name to the line.
-   - If cues are merged, preserve their original text order and only adjust punctuation/line breaks. Do not rewrite into a more natural or literary word order.
-   - Prioritize `qa_flags` and `review.normalization_diagnostics` before spending time on fine-grained polish.
-   - For `zero_duration`, `timing_span_mismatch`, `too_short`, `too_long`, `ends_mid_word`, and `starts_mid_word`, adjust token boundaries first; do not try to polish text around a broken span.
-   - Even when `qa_flags` are sparse, actively inspect for flash cues, short text hanging too long, unnatural joins across full sentences, and cross-speaker merges.
-   - Treat `subtitles[].start`, `subtitles[].end`, `word_*`, and `speaker_ids` as derived preview fields.
-   - Never edit `tokens[].id`, `tokens[].start`, `tokens[].end`, `tokens[].type`, or `tokens[].speaker_id`.
-   - Ensure every non-`spacing` token belongs to exactly one subtitle.
-   - After all edits, do a second pass over the whole file and confirm no obvious QA issue remains before exporting.
-
-3. Render the corrected JSON back to SRT.
-
-   Ownership:
-
-   - Render only after checking that the corrected JSON is the latest reviewed artifact.
-
-   ```bash
-   pnpm tsx scripts/transcribe2sub.ts --from-json episode.corrected.json -o final.srt
-   ```
-
-4. Generate a direct draft only when the user prioritizes speed over review quality.
-
-   ```bash
-   pnpm tsx scripts/transcribe2sub.ts <audio> -o draft.srt
-   ```
-
-5. When rerunning the same audio with different glossary or segmentation settings, prefer `--from-raw-json` over re-uploading audio.
-
-## Editing Rules
-
-- Keep spoken content faithful unless the user explicitly asks for condensation, cleanup, or translation.
-- Correct obvious ASR lexical errors when the surrounding audio/timing span clearly supports the correction.
-- Keep glossary terms consistent across the whole transcript; once a canonical form is chosen, reuse it everywhere.
-- Extract glossary candidates while reviewing the transcript; use them to replace existing misrecognized terms, not to add unstated words.
-- Break at complete sentences, clauses, pauses, and speaker changes; do not split inside a tightly bound phrase just to satisfy a char limit.
-- Use `subtitles[].text` to fix wrong words, punctuation, casing, line breaks, and obvious ASR formatting issues.
-- Preserve token order when merging cues or correcting text. Do not move a corrected name earlier or later in the sentence.
-- Let token ranges determine timing; do not hand-edit preview timestamps to micro-adjust cue timing.
-- Move token boundaries first when semantics and the default segmentation disagree.
-- Prefer natural clause boundaries over perfectly even lengths when a subtitle runs too long.
+- Never skip review and produce final SRT directly unless the user explicitly asks for a fast draft.
+- Never save reviewed output as a generic `transcript.json`.
+- Never edit token identity, token timestamps, speaker IDs, or derived preview fields.
+- Never treat `glossary.candidates` as confirmed truth before promotion into `glossary.collected`.
+- Never drop or duplicate timed tokens to make a subtitle read better.
+- Never expand a generic form of address into a specific name unless that name is actually present in the current token span.
+- Never reorder words or clauses while correcting names, punctuation, or merged cue text.
 
 ## Final Checks
 
-- Confirm the handoff between transcription/build and review/QA is clean: draft JSON preserved, corrected JSON written separately, and raw cache retained.
-- Leave no empty subtitle.
-- Drop or duplicate no timed token.
-- Resolve obvious ASR errors before exporting.
-- Confirm name corrections did not add an unstated name or change word order.
-- Re-read the whole subtitle list once after edits instead of stopping after local fixes.
-- Promote useful `glossary.candidates` into `glossary.collected` or delete them during review.
-- Make person names, brand names, and domain terms consistent with `glossary.entries` and `glossary.collected`.
-- Confirm no error-level `qa_flags` remain unaddressed and that warning-level flags were consciously reviewed.
-- Make subtitle text read naturally in the target language.
-- Confirm rendered timing matches the final token span.
-- Return SRT unless the user explicitly asks to keep JSON.
+- The artifact chain is complete: review JSON, segmented JSON, corrected JSON, raw cache when applicable, and final SRT.
+- The final SRT was rendered from `.corrected.json`.
+- No empty subtitle remains.
+- No non-`spacing` token is missing or duplicated.
+- No obvious ASR error, unresolved term inconsistency, or error-level `qa_flag` remains.
+- Name and term corrections did not add unstated content or change word order.
+- Structural QA ran before Text QA, and Text QA did not change token ranges.
+- Return SRT by default unless the user explicitly asks to keep JSON as the final artifact.
