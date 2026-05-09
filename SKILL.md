@@ -10,9 +10,10 @@ Use this skill as a quality-first subtitle production pipeline, not as a one-pas
 ## Subagent Operating Model
 
 - Use separate responsibilities for `Coordinator`, `Transcription Builder`, `Structural QA`, `Text QA`, and `Render Validate`.
-- When real subagents are available, assign each role to a separate subagent.
+- `Coordinator` is a planning role inside the current agent session, not a subagent role. Never spawn a dedicated Coordinator subagent.
+- When real subagents are available, only `Transcription Builder`, `Structural QA`, `Text QA`, and `Render Validate` may be assigned to separate subagents.
 - When real subagents are unavailable, simulate separation as explicit passes: finish and save one artifact before starting the next pass.
-- Each subagent edits only its owned artifact and fields. If a problem belongs to another role, hand it back through the Coordinator instead of guessing across boundaries.
+- Each execution role edits only its owned artifact and fields. If a problem belongs to another role, hand it back through the Coordinator logic in the current agent instead of guessing across boundaries.
 - Optimize in this order: transcript fidelity -> timing fidelity -> segmentation -> text consistency -> readability polish.
 
 ## Artifact Contract
@@ -23,15 +24,16 @@ Use this skill as a quality-first subtitle production pipeline, not as a one-pas
 - Raw cache: `<basename>.elevenlabs.json`, derived from the main output path without its extension. For `episode.review.json`, the default cache is `episode.review.elevenlabs.json`.
 - Final delivery: `.srt`, rendered from `<stem>.corrected.json` unless the user explicitly requests a lower-quality fast draft.
 
-## Role: Coordinator
+## Role: Coordinator (Main agent)
 
-The Coordinator routes inputs and enforces clean handoffs. It does not directly edit subtitle content, token ranges, timestamps, or glossary data.
+The Coordinator routes inputs and enforces clean handoffs inside the current top-level agent. It is orchestration logic, not a spawned worker. It does not directly edit subtitle content, token ranges, timestamps, or glossary data.
 
 - Classify the user input: audio/video, ElevenLabs raw JSON, `.review.json`, `.segmented.json`, `.corrected.json`, existing SRT draft, or fast-draft request.
-- Choose the route and assign roles in this order whenever quality matters: `Transcription Builder -> Structural QA -> Text QA -> Render Validate`.
+- Choose the route and, when subagents are used, assign only these worker roles in this order: `Transcription Builder -> Structural QA -> Text QA -> Render Validate`.
 - Confirm input paths, output names, glossary path, segmentation settings, and whether the user explicitly accepts fast-draft quality.
 - Ensure every handoff artifact exists and follows the naming contract.
 - Route failures back to the owning role: structural/timing/token issues go to Structural QA; ASR/text/glossary issues go to Text QA; command/render failures go to Render Validate or Transcription Builder as appropriate.
+- In Codex or any environment that already has a top-level agent, treat that top-level agent as the Coordinator. Do not create a nested Coordinator subagent.
 
 ## Role: Transcription Builder
 
@@ -172,7 +174,7 @@ pnpm tsx scripts/transcribe2sub.ts <audio> -o draft.srt
 - Structural QA owns `subtitles[].token_start`, `subtitles[].token_end`, and minimal text synchronization caused by range changes.
 - Text QA owns `subtitles[].text`, `glossary.candidates`, and `glossary.collected`.
 - Render Validate owns SRT rendering and final delivery checks.
-- No subagent may edit `tokens[].id`, `tokens[].start`, `tokens[].end`, `tokens[].type`, `tokens[].speaker_id`, `subtitles[].start`, `subtitles[].end`, `word_*`, or `speaker_ids`.
+- No worker subagent may edit `tokens[].id`, `tokens[].start`, `tokens[].end`, `tokens[].type`, `tokens[].speaker_id`, `subtitles[].start`, `subtitles[].end`, `word_*`, or `speaker_ids`.
 
 ## Required
 
