@@ -16,6 +16,15 @@ Use this skill as a quality-first subtitle production pipeline, not as a one-pas
 - Each execution role edits only its owned artifact and fields. If a problem belongs to another role, hand it back through the Coordinator logic in the current agent instead of guessing across boundaries.
 - Optimize in this order: transcript fidelity -> timing fidelity -> segmentation -> text consistency -> readability polish.
 
+## Worker Workflow Discipline
+
+- The current top-level agent acts as Coordinator and keeps the top-level handoff todo list.
+- Each worker role must manage its own workflow with a todo list before doing substantive work.
+- The worker todo list must include every required workflow step for that role, including validation and handoff steps.
+- Mark each workflow step complete immediately after finishing it; do not batch all completion updates at the end.
+- A worker may not hand off an artifact until its required workflow checklist is complete or it explicitly reports the blocker to Coordinator.
+- In environments without real subagents, simulate this by creating a separate todo checklist for each role pass.
+
 ## Artifact Contract
 
 - Machine draft: `<stem>.review.json`.
@@ -38,6 +47,15 @@ The Coordinator routes inputs and enforces clean handoffs inside the current top
 ## Role: Transcription Builder
 
 The Transcription Builder only generates or rebuilds machine-reviewable JSON.
+
+Workflow checklist:
+
+- Create a Transcription Builder todo list for dependency checks, input classification, command execution, raw cache preservation, review JSON output, and handoff summary.
+- Confirm `ffmpeg`, Node.js, pnpm dependencies, input path, output path, glossary path, and raw JSON reuse strategy.
+- Run the selected generation or rebuild command.
+- Confirm `<stem>.review.json` exists.
+- Confirm `<basename>.elevenlabs.json` exists when audio/video was processed through the API.
+- Hand off the review JSON path, raw cache path, glossary path, and segmentation settings to Structural QA.
 
 - Confirm `ffmpeg` is available.
 - On first practical use after installation, run `pnpm install` from the skill root if dependencies are missing. Request approval first when the environment blocks installation.
@@ -75,6 +93,17 @@ pnpm tsx scripts/transcribe2sub.ts --from-raw-json episode.review.elevenlabs.jso
 
 Structural QA owns non-text subtitle correctness: token coverage, timing, segmentation, and script-generated QA flags. Its output is `<stem>.segmented.json`.
 
+Workflow checklist:
+
+- Create a Structural QA todo list for input read, QA scan, boundary edits, coverage verification, segmented JSON save, render smoke test, and handoff summary.
+- Read `<stem>.review.json` and inspect all `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
+- Fix structural issues by adjusting token ranges and only the minimum text synchronization required by range changes.
+- Verify every non-`spacing` token is covered exactly once.
+- Save `<stem>.segmented.json`.
+- Run a render smoke test from `<stem>.segmented.json` to a temporary SRT before handing off to Text QA.
+- If the smoke test fails, fix the structural cause and rerun the smoke test until it passes or report the blocker to Coordinator.
+- Hand off the segmented JSON path, smoke-test result, and any remaining non-blocking warnings to Text QA.
+
 - Input `<stem>.review.json`; output `<stem>.segmented.json`.
 - Inspect `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
 - Treat every error-level `qa_flag` as a must-fix issue. Review warning-level flags deliberately instead of ignoring them.
@@ -90,17 +119,37 @@ Structural QA owns non-text subtitle correctness: token coverage, timing, segmen
 - Never hand-edit `subtitles[].start`, `subtitles[].end`, `word_*`, or `speaker_ids`; they are derived preview fields.
 - Ensure every non-`spacing` token belongs to exactly one subtitle.
 - If a structural fix requires semantic judgment about wording, hand off to Text QA after preserving a valid token range.
+- The smoke-test SRT is only a validation artifact. Do not deliver it as the final subtitle.
+
+Smoke-test command pattern:
+
+```bash
+pnpm tsx scripts/transcribe2sub.ts --from-json episode.segmented.json -o /tmp/episode.segmented.smoke.srt
+```
 
 ## Role: Text QA
 
 Text QA owns transcript fidelity and subtitle text quality after structural boundaries are stable. Its output is `<stem>.corrected.json`.
+
+Workflow checklist:
+
+- Create a Text QA todo list for input read, source-type check, web research when required, glossary review, text correction, final text sweep, corrected JSON save, and handoff summary.
+- Read `<stem>.segmented.json` and confirm Structural QA reported a passing smoke test.
+- Determine whether the source is a film, TV episode, drama, anime, or other narrative work.
+- For narrative works, run web search before finalizing canonical names and proper nouns. Search for the official title plus likely character names, cast names, organizations, locations, and repeated proper nouns.
+- Use search results only to confirm spellings for spoken or clearly misrecognized content; do not add unstated content.
+- Review `glossary.entries`, `glossary.candidates`, and `glossary.collected` before editing subtitles.
+- Correct text quality issues across the whole transcript.
+- Save `<stem>.corrected.json`.
+- Hand off the corrected JSON path, web research summary when used, and unresolved uncertainties to Render Validate.
 
 - Input `<stem>.segmented.json`; output `<stem>.corrected.json`.
 - Review `subtitles[].text`, `glossary.entries`, `glossary.candidates`, and `glossary.collected` across the whole transcript.
 - Keep spoken meaning faithful unless the user explicitly asks for condensation, cleanup, or translation.
 - Correct obvious ASR lexical errors, homophone errors, proper nouns, domain terms, spelling, punctuation, casing, and line breaks when the current token span supports the correction.
 - Use `glossary.entries` as locked canonical terms from the user.
-- When the source video is a film, TV episode, drama, anime, or other narrative work, use web search when needed to confirm official character names, cast names, titles, organizations, locations, and proper-noun spellings before promoting canonical forms.
+- When the source video is a film, TV episode, drama, anime, or other narrative work, web search is mandatory when a search tool is available. Use it to confirm official character names, cast names, titles, organizations, locations, and proper-noun spellings before promoting canonical forms.
+- If web search is unavailable, keep uncertain names and terms in `glossary.candidates` instead of guessing.
 - Extract names, brands, products, organizations, locations, and domain terms while reviewing. Put uncertain terms in `glossary.candidates`; promote confirmed canonical forms into `glossary.collected`.
 - Keep repeated people names, team names, work titles, product names, and domain terms consistent with `glossary.entries` and `glossary.collected`.
 - Proper noun and terminology corrections may only replace content already spoken inside the current token span or inside adjacent cues that were already merged by Structural QA.
@@ -113,6 +162,15 @@ Text QA owns transcript fidelity and subtitle text quality after structural boun
 ## Role: Render Validate
 
 Render Validate only renders the final reviewed JSON and checks delivery risk.
+
+Workflow checklist:
+
+- Create a Render Validate todo list for corrected JSON read, final render, failure classification, SRT provenance check, final delivery checks, and handoff summary.
+- Read the latest `<stem>.corrected.json`.
+- Render final SRT with `--from-json`.
+- If rendering fails, classify the issue and route it to Structural QA, Text QA, or the operational owner.
+- Confirm the final SRT came from `<stem>.corrected.json`.
+- Confirm final delivery checks before returning the SRT path.
 
 - Input the latest `<stem>.corrected.json`; never render final SRT directly from `<stem>.review.json` or `<stem>.segmented.json`.
 - Run JSON-to-SRT rendering.
@@ -130,7 +188,7 @@ pnpm tsx scripts/transcribe2sub.ts --from-json episode.corrected.json -o final.s
 
 1. Coordinator confirms input, output stem, glossary, segmentation settings, and quality target.
 2. Transcription Builder creates `<stem>.review.json` and `<basename>.elevenlabs.json`.
-3. Structural QA creates `<stem>.segmented.json`.
+3. Structural QA creates `<stem>.segmented.json` and runs a temporary SRT smoke test from it.
 4. Text QA creates `<stem>.corrected.json`.
 5. Render Validate creates the final SRT.
 
@@ -138,14 +196,14 @@ pnpm tsx scripts/transcribe2sub.ts --from-json episode.corrected.json -o final.s
 
 1. Coordinator confirms the reusable `<basename>.elevenlabs.json`, glossary, and segmentation settings.
 2. Transcription Builder uses `--from-raw-json` to create a new `<stem>.review.json`.
-3. Structural QA creates `<stem>.segmented.json`.
+3. Structural QA creates `<stem>.segmented.json` and runs a temporary SRT smoke test from it.
 4. Text QA creates `<stem>.corrected.json`.
 5. Render Validate creates the final SRT.
 
 ### Continue From Existing Review JSON
 
 1. Coordinator confirms the input is `.review.json`.
-2. Structural QA creates `.segmented.json`.
+2. Structural QA creates `.segmented.json` and runs a temporary SRT smoke test from it.
 3. Text QA creates `.corrected.json`.
 4. Render Validate renders from `.corrected.json`.
 
@@ -199,6 +257,7 @@ pnpm tsx scripts/transcribe2sub.ts <audio> -o draft.srt
 ## Final Checks
 
 - The artifact chain is complete: review JSON, segmented JSON, corrected JSON, raw cache when applicable, and final SRT.
+- Structural QA ran a temporary SRT smoke test from `.segmented.json` before Text QA started.
 - The final SRT was rendered from `.corrected.json`.
 - No empty subtitle remains.
 - No non-`spacing` token is missing or duplicated.
