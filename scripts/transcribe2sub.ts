@@ -44,6 +44,8 @@ export interface Subtitle extends SubtitleDraft {
   speakerIds: string[];
 }
 
+type SrtSubtitle = Omit<Subtitle, "start" | "end"> & { start: number; end: number };
+
 interface JsonSubtitle {
   index?: number;
   token_start: number;
@@ -178,8 +180,9 @@ const MIXED_TOKEN_OTHER_CHAR_DURATION = 0.16;
 const MIXED_TOKEN_MIN_CORE_DURATION = 0.12;
 const MIXED_TOKEN_MAX_CORE_DURATION = 0.72;
 const SUBTITLE_LEAD_IN = 0.18;
-const SUBTITLE_LEAD_OUT = 0.12;
+const SUBTITLE_LEAD_OUT = 0.2;
 const SUBTITLE_END_GUARD = 0.04;
+const SRT_OVERLAP_GUARD = 0.001;
 const MIN_SUBTITLE_DISPLAY_DURATION = 0.5;
 const SHORT_TAIL_CLIP_MULTIPLIER = 2.6;
 const SHORT_TAIL_CLIP_FALLBACK_DURATION = 0.45;
@@ -209,6 +212,8 @@ const DEFAULT_REVIEW_CHECKLIST = [
   "本 JSON 默认交给 review/QA 子 agent 处理；转录和原始草稿生成应由独立的转录子 agent 负责。",
   "导出前先完整检查 subtitles[].qa_flags 与 review.normalization_diagnostics，把每个 error 级问题都当成必须处理的待办。",
   "修正明显的 ASR 错词、同音误识别和专有名词拼写错误。",
+  "专名和术语只能原位替换已说出的内容；不能把当前 token span 没有说出的姓名、主语、宾语或解释补进字幕。",
+  "允许合并相邻 cue，但合并后的文字必须保持原 token/cue 顺序，只能调整标点和换行，不能改写语序。",
   "在纠正 ASR 错词的同时，抽取人名、品牌名、产品名、地名和领域术语。",
   "先把待确认术语写入 glossary.candidates，再把确认过的 canonical 写法写入 glossary.collected。",
   "发现新术语时，将 canonical 写法记录到 glossary.collected，必要时补充 aliases。",
@@ -216,12 +221,41 @@ const DEFAULT_REVIEW_CHECKLIST = [
   "对 zero_duration、timing_span_mismatch、too_short、too_long、ends_mid_word、starts_mid_word，优先通过调整 token range 修复，再做文字润色。",
   "即使没有 qa_flags，也要主动巡检 flash cue、长时长短文本、跨完整句、跨说话人和异常停顿。",
   "保持每条字幕的 token range 连续、完整且不重叠。",
+  "完成前检查专名修正是否误把泛称扩写成具体姓名，或把后一句词移动到前一句。",
   "完成修改后再做一轮从头到尾 QA，确认没有空字幕、零时长、遗漏 token 或明显不自然的断句。",
 ] as const;
 
 function fail(message: string): never {
   console.error(`[ERROR] ${message}`);
   process.exit(1);
+}
+
+function printHelp(): void {
+  console.log(`用法:
+  pnpm tsx scripts/transcribe2sub.ts <audio_file> [options]
+  pnpm tsx scripts/transcribe2sub.ts --from-raw-json <elevenlabs.json> [options]
+  pnpm tsx scripts/transcribe2sub.ts --from-json <transcript.corrected.json> [-o output.srt]
+
+模式:
+  <audio_file>                 转录音频/视频，可输出 SRT 或 review JSON
+  --from-raw-json <file>       从 ElevenLabs 原始 JSON 重建 SRT 或 review JSON
+  --from-json <file>           从 corrected JSON 渲染最终 SRT
+
+选项:
+  -o, --output <file>          输出文件路径
+  -l, --language <code>        ElevenLabs 语言代码，例如 ja、en、zh
+  --format <srt|json>          输出格式，默认 srt；render 模式固定为 srt
+  --max-chars <number>         分段软字符数，默认 42
+  --max-duration <seconds>     分段软时长，默认 5.0
+  --glossary <file>            生成 review JSON 时加载术语表
+  --raw-output <file>          音频转录时保存原始 ElevenLabs JSON
+  --proxy <url>                HTTP 代理
+  -h, --help                   显示帮助
+
+命名约定:
+  机器初稿: <stem>.review.json
+  原始缓存: <basename>.elevenlabs.json，例如 transcript.review.elevenlabs.json
+  修正稿:   <stem>.corrected.json`);
 }
 
 export function defaultRawOutputPath(outputPath: string): string {
@@ -324,6 +358,7 @@ function cli(): Config {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
+      help: { type: "boolean", short: "h" },
       output: { type: "string", short: "o" },
       language: { type: "string", short: "l" },
       "max-chars": { type: "string", default: "42" },
@@ -336,6 +371,11 @@ function cli(): Config {
       "from-raw-json": { type: "string" },
     },
   });
+
+  if (values.help) {
+    printHelp();
+    process.exit(0);
+  }
 
   const input = positionals[0] ? resolve(positionals[0]) : undefined;
   const fromJson = values["from-json"] ? resolve(values["from-json"]) : undefined;
@@ -1990,8 +2030,25 @@ export function formatTimestamp(sec: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
 }
 
+export function normalizeSrtTimings(subtitles: Subtitle[]): SrtSubtitle[] {
+  const normalized: SrtSubtitle[] = subtitles.map((subtitle) => ({ ...subtitle }));
+
+  for (let index = 0; index < normalized.length - 1; index++) {
+    const current = normalized[index]!;
+    const next = normalized[index + 1]!;
+    if (current.end <= next.start) {
+      continue;
+    }
+
+    const boundedEnd = Math.max(current.start, next.start - SRT_OVERLAP_GUARD);
+    current.end = Math.min(current.end, boundedEnd);
+  }
+
+  return normalized;
+}
+
 export function formatSRT(subtitles: Subtitle[]): string {
-  return subtitles
+  return normalizeSrtTimings(subtitles)
     .map((subtitle) => `${subtitle.index}\n${formatTimestamp(subtitle.start)} --> ${formatTimestamp(subtitle.end)}\n${subtitle.text}\n`)
     .join("\n");
 }
@@ -2027,8 +2084,11 @@ export function formatAgentJSON(
       "先做一轮完整 QA：从头到尾检查 subtitles[].qa_flags 和 review.normalization_diagnostics，不要只修眼前这一条。",
       "把 error 级 qa_flags 当成必须消除的问题；对 warning 级 qa_flags 也要逐条判断是否需要修复，而不是默认忽略。",
       "允许在 subtitles[].text 中修正明显的 ASR 错词、同音误识别和术语拼写错误，但不要脱离当前 token range 总结或扩写。",
+      "专名和术语纠错只能原位替换当前 token span 或被合并相邻 span 中已经说出的内容；不能新增未说出的姓名、称呼、主语、宾语或解释。",
+      "如果台词只说了泛称，例如“先輩、包丁なんて...”，即使知道指代对象，也不要改成“郡上先輩、包丁なんて...”。",
+      "允许合并相邻 cue，但合并文本必须保持原 token/cue 顺序；例如“敵わないな。カミーナさんには。”可改为“敵わないな、上伊那さんには。”，不能改为“上伊那さんには敵わないな。”。",
       "在纠正 ASR 错词的同时，主动抽取人名、品牌名、产品名、地名和领域术语，先写入 glossary.candidates，再把确认过的 canonical 写法写入 glossary.collected。",
-      "优先使用 glossary.entries 与 glossary.collected 中的 canonical 写法；glossary.candidates 只是 review 阶段的暂存区。",
+      "优先使用 glossary.entries 与 glossary.collected 中的 canonical 写法；glossary.candidates 只是 review 阶段的暂存区，不能作为向台词加词的许可。",
       "如果字幕上带有 qa_flags，优先处理 zero_duration / timing_span_mismatch / ends_mid_word / starts_mid_word / too_short / too_long / contains_mixed_raw_token / glossary_unresolved 这些提示。",
       "对 zero_duration、timing_span_mismatch、too_short、too_long，先检查 token_start / token_end 是否需要收紧、拆分、合并或移动，再处理文字。",
       "即使没有 qa_flags，也要主动寻找过短闪 cue、过长挂屏、短文本配超长时间、跨完整句和跨 speaker change 的问题。",
@@ -2040,6 +2100,7 @@ export function formatAgentJSON(
       "subtitles[].text 是最终展示文本，可修正错词、标点、大小写和换行，并保持术语前后一致。",
       "对重复出现的人名、队名、作品名和系列名，先写入 glossary.candidates；确认后再提升到 glossary.collected。",
       "术语不确定时不要猜，保留原文并让 glossary.candidates 或 qa_flags 标出待确认项。",
+      "完成前专门检查：是否添加了原 span 未说出的专名，是否为了自然而改写语序，是否把相邻 cue 的词提前或后移。",
       "完成修改后再做第二轮 QA，重新检查整份字幕是否还存在 flash cue、零时长、跨度失真、漏词、重复覆盖或明显不自然的断句。",
     ],
     tokens,

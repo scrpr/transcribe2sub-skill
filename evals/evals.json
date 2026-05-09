@@ -1,0 +1,51 @@
+{
+  "skill_name": "transcribe2sub",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我有一个日语访谈视频 `interview.mp4`，想生成高质量 SRT。请先产出可 review 的 JSON，纠正明显 ASR 错词，统一人名和产品名，最后输出 `interview.final.srt`。",
+      "expected_output": "Uses the quality-first JSON review workflow, preserves the raw ElevenLabs cache, creates a corrected JSON, then renders SRT.",
+      "files": [],
+      "expectations": [
+        "Chooses the JSON -> review -> corrected JSON -> SRT workflow instead of direct SRT.",
+        "Uses a machine draft named like `<stem>.review.json` and a reviewed output named like `<stem>.corrected.json`.",
+        "Identifies the raw cache as `<basename>.elevenlabs.json`, for example `<stem>.review.elevenlabs.json` when the draft is `<stem>.review.json`.",
+        "Keeps token timing fields read-only during review and edits only allowed subtitle/glossary fields."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "同一段音频我已经有 `episode.review.elevenlabs.json`，不要重新上传音频。请用新的 glossary 重新生成 review JSON，再做术语统一和 SRT 回写。",
+      "expected_output": "Rebuilds from raw JSON with `--from-raw-json`, applies glossary during review JSON generation, reviews terminology, and renders from corrected JSON.",
+      "files": [],
+      "expectations": [
+        "Uses `--from-raw-json episode.review.elevenlabs.json` instead of re-uploading audio.",
+        "Passes the user glossary when rebuilding review JSON.",
+        "Keeps `glossary.entries` as user-provided canonical terms and promotes confirmed discoveries to `glossary.collected`.",
+        "Renders final SRT from the corrected JSON with `--from-json`."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "只想快速把 `meeting.wav` 转成一个初稿 SRT，不需要人工 review，速度优先。",
+      "expected_output": "Recognizes the user explicitly prioritizes speed, allows direct SRT output, and does not force the review workflow.",
+      "files": [],
+      "expectations": [
+        "Uses direct SRT only because the user explicitly prioritizes speed over review quality.",
+        "Does not require a corrected JSON review pass for this quick draft request.",
+        "Still uses the script entrypoint and appropriate output naming for a draft SRT."
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "请检查 `episode.corrected.json` 里还有没有 token 覆盖、zero_duration、过短闪字幕、术语 alias 残留的问题，然后导出最终字幕。",
+      "expected_output": "Treats this as subtitle QA/rendering, validates corrected JSON constraints, resolves or reports QA issues, and renders final SRT only after review.",
+      "files": [],
+      "expectations": [
+        "Inspects `qa_flags`, token coverage, timing consistency, and glossary alias leftovers before rendering.",
+        "Does not edit `tokens[]` timing or derived subtitle preview fields.",
+        "Uses `--from-json episode.corrected.json` only after confirming the corrected JSON is ready."
+      ]
+    }
+  ]
+}

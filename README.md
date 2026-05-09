@@ -17,7 +17,7 @@ graph TB
     
     First -->|是| Preprocess[音频预处理<br/>ffmpeg → m4a]
     Preprocess --> Transcribe[调用 ElevenLabs STT API]
-    Transcribe --> SaveRaw[保存原始响应<br/>transcript.elevenlabs.json]
+    Transcribe --> SaveRaw[保存原始响应<br/>transcript.review.elevenlabs.json]
     
     First -->|否| LoadRaw[读取原始响应<br/>--from-raw-json]
     
@@ -49,14 +49,25 @@ graph TB
 推荐命名约定:
 
 - 机器初稿: `<stem>.review.json`
+- 原始缓存: `<basename>.elevenlabs.json`，由主输出路径去掉扩展名得到；例如 `transcript.review.json` 对应 `transcript.review.elevenlabs.json`
 - review 后文件: `<stem>.corrected.json`
 
 
-## 依赖
+## 环境依赖
 
-- Node.js >= 20
-- pnpm
-- ffmpeg
+使用前请先确认本机已安装以下依赖，并且对应命令可以在当前 shell 中直接执行:
+
+- Node.js >= 20: 运行 TypeScript 脚本和项目工具链
+- pnpm: 安装依赖并执行项目脚本，本项目锁定的包管理器版本见 `package.json`
+- ffmpeg: 系统级音视频工具，用于预处理音频/视频并转码为 ElevenLabs STT 使用的音频格式
+
+可用以下命令快速检查:
+
+```bash
+node --version
+pnpm --version
+ffmpeg -version
+```
 
 ## 安装
 
@@ -69,7 +80,7 @@ graph TB
 ### 手动安装
 
 ```bash
-cp -r skills/transcribe2sub/ /path/to/your/ai/agent/skills/transcribe2sub/
+cp -r /path/to/transcribe2sub /path/to/your/ai/agent/skills/transcribe2sub/
 cd /path/to/your/ai/agent/skills/transcribe2sub/
 pnpm install
 ```

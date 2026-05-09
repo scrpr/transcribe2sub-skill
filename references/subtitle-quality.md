@@ -36,12 +36,16 @@ Treat subtitle timing preview fields as informational only. Rendering recomputes
 - Keep modifiers, negation, and attached particles with the words they qualify.
 - Avoid joining two unrelated clauses only because each clause is short on its own.
 - Avoid one-word flash subtitles unless the audio itself is abrupt and isolated.
+- When merging adjacent cues, keep the original cue/token order. Merging may change punctuation, not word order.
 
 ## Text Cleanup
 
 - Correct obvious ASR errors when the intended wording is clear from the audio, context, or glossary.
 - Fix punctuation and casing when the spoken meaning is unchanged.
 - Reflow line breaks for readability.
+- Replace misrecognized terms in place. Do not move a corrected term elsewhere in the sentence.
+- Do not add a name, subject, object, or explanatory word that was not spoken in the current token span or merged adjacent span.
+- A generic address should stay generic unless the exact line contains the name. Knowing the referent from context is not enough.
 - Preserve wording unless the user explicitly asks for condensation, translation, or editorial cleanup.
 - Do not invent words to smooth over unclear audio.
 
@@ -49,6 +53,7 @@ Treat subtitle timing preview fields as informational only. Rendering recomputes
 
 - Extract and update `glossary.candidates` while reviewing the transcript; treat them as suggestions, not locked truth.
 - Use glossary canonical forms for people, products, organizations, locations, and repeated domain terms.
+- Use glossary canonical forms only to normalize terms that are already present or clearly misrecognized in place.
 - Record newly resolved terms in `glossary.collected` during review.
 - Remove alias spellings from final subtitles before rendering.
 - If a term is uncertain, keep the original wording and flag it instead of guessing.
@@ -69,3 +74,5 @@ Treat subtitle timing preview fields as informational only. Rendering recomputes
 - No subtitle combines two full sentences when a punctuation boundary already exists.
 - No subtitle ends before the final audible word in its token span.
 - Readability improvements do not change meaning.
+- Cue merges preserve original word order.
+- Name and term corrections do not add unstated spoken content.

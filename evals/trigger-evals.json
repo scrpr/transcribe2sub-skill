@@ -1,0 +1,50 @@
+[
+  {
+    "query": "我有 `talk_show_ep03.mp4`，想生成中文字幕 SRT。请先走 review JSON，让 agent 修正 ASR 错词和人名，再导出最终字幕。",
+    "should_trigger": true
+  },
+  {
+    "query": "Use the existing `lecture.review.elevenlabs.json`; don't upload audio again. Rebuild review JSON with my glossary and render the corrected transcript to SRT.",
+    "should_trigger": true
+  },
+  {
+    "query": "这个 `episode.corrected.json` 可能还有 zero_duration、token 覆盖和术语 alias 残留，请检查后输出最终 srt。",
+    "should_trigger": true
+  },
+  {
+    "query": "Need subtitle QA for a generated transcript: timing should come from token ranges, not hand-edited timestamps, and terms must match the glossary.",
+    "should_trigger": true
+  },
+  {
+    "query": "把 `meeting.wav` 快速转成一个 draft.srt 就行，不需要 review，速度优先。",
+    "should_trigger": true
+  },
+  {
+    "query": "请优化这个英文 SRT 的语义分段、标点和专有名词一致性，最终仍要输出 SRT。",
+    "should_trigger": true
+  },
+  {
+    "query": "帮我写一个 TypeScript 函数，把秒数格式化成 SRT timestamp，比如 62.5 -> 00:01:02,500。",
+    "should_trigger": false
+  },
+  {
+    "query": "我想比较 ElevenLabs 和 OpenAI 的语音识别价格，给我做一张表，不需要处理音频文件。",
+    "should_trigger": false
+  },
+  {
+    "query": "解释一下字幕里的 ASS 和 SRT 格式有什么区别，给普通用户看的说明即可。",
+    "should_trigger": false
+  },
+  {
+    "query": "请翻译这段英文字幕文本为中文，只要翻译内容，不要生成时间轴或调用转录脚本。",
+    "should_trigger": false
+  },
+  {
+    "query": "帮我修 README，说明项目依赖 Node.js、pnpm 和 ffmpeg。",
+    "should_trigger": false
+  },
+  {
+    "query": "检查 `scripts/transcribe2sub.ts` 里的 retry 逻辑有没有 bug，这是代码审查，不是处理媒体文件。",
+    "should_trigger": false
+  }
+]

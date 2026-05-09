@@ -7,6 +7,7 @@ import {
   createTokens,
   defaultRawOutputPath,
   formatAgentJSON,
+  formatSRT,
   formatTimestamp,
   isRetryableTranscribeError,
   normalizeWordsForSegmentation,
@@ -46,6 +47,35 @@ function buildReview(): AgentTranscript["review"] {
 test("formatTimestamp carries rounded milliseconds into the next second", () => {
   assert.equal(formatTimestamp(1.9996), "00:00:02,000");
   assert.equal(formatTimestamp(59.9996), "00:01:00,000");
+});
+
+test("formatSRT prevents overlapping neighboring cues", () => {
+  const subtitles = [
+    {
+      index: 1,
+      tokenStart: 0,
+      tokenEnd: 0,
+      wordStart: 0,
+      wordEnd: 0,
+      start: 10,
+      end: 12,
+      text: "A",
+      speakerIds: [],
+    },
+    {
+      index: 2,
+      tokenStart: 1,
+      tokenEnd: 1,
+      wordStart: 1,
+      wordEnd: 1,
+      start: 11.5,
+      end: 13,
+      text: "B",
+      speakerIds: [],
+    },
+  ];
+
+  assert.match(formatSRT(subtitles), /00:00:10,000 --> 00:00:11,499/);
 });
 
 test("defaultRawOutputPath derives a sibling ElevenLabs cache path", () => {
@@ -453,9 +483,9 @@ test("subtitlesFromAgentTranscript applies timing padding without crossing neigh
 
   const subtitles = subtitlesFromAgentTranscript(transcript);
   assert.ok(Math.abs(subtitles[0]!.start - 0.82) < 1e-9);
-  assert.ok(Math.abs(subtitles[0]!.end - 1.42) < 1e-9);
+  assert.ok(Math.abs(subtitles[0]!.end - 1.46) < 1e-9);
   assert.ok(Math.abs(subtitles[1]!.start - 1.34) < 1e-9);
-  assert.ok(Math.abs(subtitles[1]!.end - 1.92) < 1e-9);
+  assert.ok(Math.abs(subtitles[1]!.end - 2.0) < 1e-9);
 });
 
 test("parseGlossaryText supports canonical terms and aliases", () => {
@@ -552,7 +582,8 @@ test("subtitlesFromAgentTranscript clips long punctuation tails while preserving
   };
 
   const subtitles = subtitlesFromAgentTranscript(transcript);
-  assert.ok(subtitles[0]!.end < 1093);
+  assert.ok(subtitles[0]!.end < 1093.1);
+  assert.ok(subtitles[0]!.end >= 1093.0);
   assert.ok(subtitles[1]!.end >= 1095.982);
   assert.ok(subtitles[1]!.end < 1096.25);
 });
