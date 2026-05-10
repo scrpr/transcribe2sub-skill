@@ -488,7 +488,7 @@ test("subtitlesFromAgentTranscript applies timing padding without crossing neigh
   assert.ok(Math.abs(subtitles[1]!.end - 2.0) < 1e-9);
 });
 
-test("parseGlossaryText supports canonical terms and aliases", () => {
+test("parseGlossaryText supports canonical terms and reject forms", () => {
   const glossary = parseGlossaryText(`
 # comment
 OpenAI | Open AI | Open A.I.
@@ -497,8 +497,8 @@ OpenAI
   `);
 
   assert.deepEqual(glossary, [
-    { canonical: "OpenAI", aliases: ["Open AI", "Open A.I."] },
-    { canonical: "Sam Altman", aliases: ["Sam Alman", "Sam Altmann"] },
+    { canonical: "OpenAI", reject_forms: ["Open AI", "Open A.I."] },
+    { canonical: "Sam Altman", reject_forms: ["Sam Alman", "Sam Altmann"] },
   ]);
 });
 
@@ -738,7 +738,7 @@ test("subtitlesFromAgentTranscript rejects zero-duration subtitles", () => {
   );
 });
 
-test("subtitlesFromAgentTranscript rejects leftover glossary aliases", () => {
+test("subtitlesFromAgentTranscript rejects leftover glossary reject forms", () => {
   const tokens = createTokens(buildWords([
     { text: "Open", start: 0, end: 0.3, type: "word" },
     { text: " ", start: 0.3, end: 0.35, type: "spacing" },
@@ -758,7 +758,7 @@ test("subtitlesFromAgentTranscript rejects leftover glossary aliases", () => {
     },
     review: buildReview(),
     glossary: buildGlossary([
-      { canonical: "OpenAI", aliases: ["Open AI"] },
+      { canonical: "OpenAI", reject_forms: ["Open AI"] },
     ]),
     instructions: [],
     tokens,
@@ -798,7 +798,7 @@ test("formatAgentJSON emits correction and glossary metadata", () => {
     text: "Hello world!",
     words,
   }, tokens, subtitles, { maxChars: 42, maxDuration: 5 }, [
-    { canonical: "OpenAI", aliases: ["Open AI"] },
+    { canonical: "OpenAI", reject_forms: ["Open AI"] },
   ])) as {
     instructions: string[];
     review: AgentTranscript["review"];
@@ -807,7 +807,7 @@ test("formatAgentJSON emits correction and glossary metadata", () => {
 
   assert.equal(json.review.allow_asr_corrections, true);
   assert.equal(json.review.require_term_consistency, true);
-  assert.deepEqual(json.glossary.entries, [{ canonical: "OpenAI", aliases: ["Open AI"] }]);
+  assert.deepEqual(json.glossary.entries, [{ canonical: "OpenAI", reject_forms: ["Open AI"] }]);
   assert.deepEqual(json.glossary.candidates, []);
   assert.ok(json.review.checklist.some((line) => line.includes("review/QA 子 agent")));
   assert.ok(json.review.checklist.some((line) => line.includes("完整检查 subtitles[].qa_flags")));

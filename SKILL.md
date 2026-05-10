@@ -1,6 +1,6 @@
 ---
 name: transcribe2sub
-description: "Subagent-based subtitle production workflow for generating, rebuilding, structurally QAing, text-reviewing, and rendering high-quality SRT subtitles from audio/video files, ElevenLabs raw JSON, .review.json, .segmented.json, .corrected.json, or existing SRT drafts. Use this skill for audio/video-to-SRT, Chinese/Japanese/English subtitles, review JSON, corrected JSON, semantic segmentation, token-range editing, qa_flags, zero_duration, ASR cleanup, homophone fixes, proper nouns, glossary aliases, terminology consistency, and JSON-to-SRT round-tripping. Always prefer this skill for subtitle file work beyond plain explanation or unrelated code tasks."
+description: "Subagent-based subtitle production workflow for generating, rebuilding, structurally QAing, text-reviewing, and rendering high-quality SRT subtitles from audio/video files, ElevenLabs raw JSON, .review.json, .segmented.json, .corrected.json, or existing SRT drafts. Use this skill for audio/video-to-SRT, Chinese/Japanese/English subtitles, review JSON, corrected JSON, semantic segmentation, token-range editing, qa_flags, zero_duration, ASR cleanup, homophone fixes, proper nouns, glossary reject_forms, terminology consistency, and JSON-to-SRT round-tripping. Always prefer this skill for subtitle file work beyond plain explanation or unrelated code tasks."
 ---
 
 # transcribe2sub
@@ -33,11 +33,20 @@ Use this skill as a quality-first subtitle production pipeline, not as a one-pas
 - Raw cache: `<basename>.elevenlabs.json`, derived from the main output path without its extension. For `episode.review.json`, the default cache is `episode.review.elevenlabs.json`.
 - Final delivery: `.srt`, rendered from `<stem>.corrected.json` unless the user explicitly requests a lower-quality fast draft.
 
+## Runtime Contract
+
+- Do not hardcode the skill installation path. Users may install this skill under different roots such as `~/.codex/skills`, `~/.claude/skills`, or a project-local skill directory.
+- Coordinator must resolve `skill_root` before launching or simulating any worker role. Find the installed skill directory that contains both this `SKILL.md` and `scripts/transcribe2sub.ts`.
+- After resolving `skill_root`, set `script_path` to `<skill_root>/scripts/transcribe2sub.ts`.
+- Coordinator must pass `skill_root`, `script_path`, and `run_commands_from: <skill_root>` to every worker role.
+- Workers must run commands from `skill_root` so `pnpm` resolves local dependencies, and must use the received absolute `script_path` instead of searching for the script.
+
 ## Role: Coordinator (Main agent)
 
 The Coordinator routes inputs and enforces clean handoffs inside the current top-level agent. It is orchestration logic, not a spawned worker. It does not directly edit subtitle content, token ranges, timestamps, or glossary data.
 
 - Classify the user input: audio/video, ElevenLabs raw JSON, `.review.json`, `.segmented.json`, `.corrected.json`, existing SRT draft, or fast-draft request.
+- Resolve `skill_root` and `script_path` once, then include both paths in every worker instruction.
 - Choose the route and, when subagents are used, assign only these worker roles in this order: `Transcription Builder -> Structural QA -> Text QA -> Render Validate`.
 - Confirm input paths, output names, glossary path, segmentation settings, and whether the user explicitly accepts fast-draft quality.
 - Ensure every handoff artifact exists and follows the naming contract.
@@ -50,7 +59,8 @@ The Transcription Builder only generates or rebuilds machine-reviewable JSON.
 
 Workflow checklist:
 
-- Create a Transcription Builder todo list for dependency checks, input classification, command execution, raw cache preservation, review JSON output, and handoff summary.
+- Create a Transcription Builder todo list for runtime path intake, dependency checks, input classification, command execution, raw cache preservation, review JSON output, and handoff summary.
+- Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from` before running commands.
 - Confirm `ffmpeg`, Node.js, pnpm dependencies, input path, output path, glossary path, and raw JSON reuse strategy.
 - Run the selected generation or rebuild command.
 - Confirm `<stem>.review.json` exists.
@@ -68,25 +78,25 @@ Workflow checklist:
 CJK baseline:
 
 ```bash
-pnpm tsx scripts/transcribe2sub.ts <audio> --format json --max-chars 22 --max-duration 8.0 -o episode.review.json
+pnpm tsx <script_path> <audio> --format json --max-chars 22 --max-duration 8.0 -o episode.review.json
 ```
 
 Spaced-language baseline:
 
 ```bash
-pnpm tsx scripts/transcribe2sub.ts <audio> --format json --max-chars 38 --max-duration 4.0 -o episode.review.json
+pnpm tsx <script_path> <audio> --format json --max-chars 38 --max-duration 4.0 -o episode.review.json
 ```
 
 With a user glossary:
 
 ```bash
-pnpm tsx scripts/transcribe2sub.ts <audio> --format json --glossary glossary.txt -o episode.review.json
+pnpm tsx <script_path> <audio> --format json --glossary glossary.txt -o episode.review.json
 ```
 
 Rebuild from saved raw JSON:
 
 ```bash
-pnpm tsx scripts/transcribe2sub.ts --from-raw-json episode.review.elevenlabs.json --format json --glossary glossary.txt -o episode.review.json
+pnpm tsx <script_path> --from-raw-json episode.review.elevenlabs.json --format json --glossary glossary.txt -o episode.review.json
 ```
 
 ## Role: Structural QA
@@ -95,7 +105,8 @@ Structural QA owns non-text subtitle correctness: token coverage, timing, segmen
 
 Workflow checklist:
 
-- Create a Structural QA todo list for input read, QA scan, boundary edits, coverage verification, segmented JSON save, render smoke test, and handoff summary.
+- Create a Structural QA todo list for runtime path intake, input read, QA scan, boundary edits, coverage verification, segmented JSON save, render smoke test, and handoff summary.
+- Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from` before running the smoke-test command.
 - Read `<stem>.review.json` and inspect all `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
 - Fix structural issues by adjusting token ranges and only the minimum text synchronization required by range changes.
 - Verify every non-`spacing` token is covered exactly once.
@@ -124,7 +135,7 @@ Workflow checklist:
 Smoke-test command pattern:
 
 ```bash
-pnpm tsx scripts/transcribe2sub.ts --from-json episode.segmented.json -o /tmp/episode.segmented.smoke.srt
+pnpm tsx <script_path> --from-json episode.segmented.json -o /tmp/episode.segmented.smoke.srt
 ```
 
 ## Role: Text QA
@@ -133,12 +144,15 @@ Text QA owns transcript fidelity and subtitle text quality after structural boun
 
 Workflow checklist:
 
-- Create a Text QA todo list for input read, source-type check, web research when required, glossary review, text correction, final text sweep, corrected JSON save, and handoff summary.
+- Create a Text QA todo list for runtime path intake, input read, source-type check, web research when required, glossary review, reject-form review, text correction, final text sweep, corrected JSON save, and handoff summary.
+- Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from`; Text QA usually does not run the script, but must preserve these paths for handoff.
 - Read `<stem>.segmented.json` and confirm Structural QA reported a passing smoke test.
 - Determine whether the source is a film, TV episode, drama, anime, or other narrative work.
 - For narrative works, run web search before finalizing canonical names and proper nouns. Search for the official title plus likely character names, cast names, organizations, locations, and repeated proper nouns.
 - Use search results only to confirm spellings for spoken or clearly misrecognized content; do not add unstated content.
 - Review `glossary.entries`, `glossary.candidates`, and `glossary.collected` before editing subtitles.
+- Review every `reject_forms` list before saving. `reject_forms` are forbidden spellings that must not remain in final subtitles; they are not acceptable nicknames or alternate names.
+- Do not put nicknames, honorific forms, short names, relationship terms, titles, or in-universe spoken variants into `reject_forms`. Keep acceptable variants in `note` if useful.
 - Correct text quality issues across the whole transcript.
 - Save `<stem>.corrected.json`.
 - Hand off the corrected JSON path, web research summary when used, and unresolved uncertainties to Render Validate.
@@ -148,6 +162,7 @@ Workflow checklist:
 - Keep spoken meaning faithful unless the user explicitly asks for condensation, cleanup, or translation.
 - Correct obvious ASR lexical errors, homophone errors, proper nouns, domain terms, spelling, punctuation, casing, and line breaks when the current token span supports the correction.
 - Use `glossary.entries` as locked canonical terms from the user.
+- Treat `reject_forms` as a reject list: these are ASR mistakes, misspellings, wrong kanji/kana/romanization, or otherwise incorrect forms that must be replaced by `canonical` before render.
 - When the source video is a film, TV episode, drama, anime, or other narrative work, web search is mandatory when a search tool is available. Use it to confirm official character names, cast names, titles, organizations, locations, and proper-noun spellings before promoting canonical forms.
 - If web search is unavailable, keep uncertain names and terms in `glossary.candidates` instead of guessing.
 - Extract names, brands, products, organizations, locations, and domain terms while reviewing. Put uncertain terms in `glossary.candidates`; promote confirmed canonical forms into `glossary.collected`.
@@ -165,7 +180,8 @@ Render Validate only renders the final reviewed JSON and checks delivery risk.
 
 Workflow checklist:
 
-- Create a Render Validate todo list for corrected JSON read, final render, failure classification, SRT provenance check, final delivery checks, and handoff summary.
+- Create a Render Validate todo list for runtime path intake, corrected JSON read, final render, failure classification, SRT provenance check, final delivery checks, and handoff summary.
+- Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from` before running commands.
 - Read the latest `<stem>.corrected.json`.
 - Render final SRT with `--from-json`.
 - If rendering fails, classify the issue and route it to Structural QA, Text QA, or the operational owner.
@@ -179,7 +195,7 @@ Workflow checklist:
 - Confirm no empty subtitle, obvious timing inversion, duplicated token coverage, or unresolved error-level QA issue remains.
 
 ```bash
-pnpm tsx scripts/transcribe2sub.ts --from-json episode.corrected.json -o final.srt
+pnpm tsx <script_path> --from-json episode.corrected.json -o final.srt
 ```
 
 ## Workflow Routes
@@ -223,7 +239,7 @@ pnpm tsx scripts/transcribe2sub.ts --from-json episode.corrected.json -o final.s
 Only when the user explicitly prioritizes speed and accepts lower review quality, direct SRT output is allowed:
 
 ```bash
-pnpm tsx scripts/transcribe2sub.ts <audio> -o draft.srt
+pnpm tsx <script_path> <audio> -o draft.srt
 ```
 
 ## Field Ownership
@@ -250,6 +266,7 @@ pnpm tsx scripts/transcribe2sub.ts <audio> -o draft.srt
 - Never save reviewed output as a generic `transcript.json`.
 - Never edit token identity, token timestamps, speaker IDs, or derived preview fields.
 - Never treat `glossary.candidates` as confirmed truth before promotion into `glossary.collected`.
+- Never use `reject_forms` for acceptable nicknames, short names, honorifics, relationship terms, or in-universe variants that may legitimately remain in subtitle text.
 - Never drop or duplicate timed tokens to make a subtitle read better.
 - Never expand a generic form of address into a specific name unless that name is actually present in the current token span.
 - Never reorder words or clauses while correcting names, punctuation, or merged cue text.

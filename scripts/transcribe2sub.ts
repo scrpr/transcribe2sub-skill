@@ -61,7 +61,7 @@ interface JsonSubtitle {
 
 export interface GlossaryEntry {
   canonical: string;
-  aliases: string[];
+  reject_forms: string[];
   note?: string;
 }
 
@@ -216,7 +216,7 @@ const DEFAULT_REVIEW_CHECKLIST = [
   "允许合并相邻 cue，但合并后的文字必须保持原 token/cue 顺序，只能调整标点和换行，不能改写语序。",
   "在纠正 ASR 错词的同时，抽取人名、品牌名、产品名、地名和领域术语。",
   "先把待确认术语写入 glossary.candidates，再把确认过的 canonical 写法写入 glossary.collected。",
-  "发现新术语时，将 canonical 写法记录到 glossary.collected，必要时补充 aliases。",
+  "发现新术语时，将 canonical 写法记录到 glossary.collected，必要时补充 reject_forms。",
   "对重复出现的人名、队名、作品名和系列名，优先统一 canonical 写法；不确定时保留原文并留在 glossary.candidates。",
   "对 zero_duration、timing_span_mismatch、too_short、too_long、ends_mid_word、starts_mid_word，优先通过调整 token range 修复，再做文字润色。",
   "即使没有 qa_flags，也要主动巡检 flash cue、长时长短文本、跨完整句、跨说话人和异常停顿。",
@@ -473,15 +473,15 @@ function normalizeGlossaryEntry(entry: GlossaryEntry, context: string): Glossary
     throw new Error(`${context} 的 canonical 不能为空`);
   }
 
-  const aliases = dedupeStrings(
-    entry.aliases
-      .map((alias) => alias.trim())
+  const rejectForms = dedupeStrings(
+    entry.reject_forms
+      .map((form) => form.trim())
       .filter(Boolean)
-      .filter((alias) => alias !== canonical),
+      .filter((form) => form !== canonical),
   );
   const note = entry.note?.trim();
 
-  return note ? { canonical, aliases, note } : { canonical, aliases };
+  return note ? { canonical, reject_forms: rejectForms, note } : { canonical, reject_forms: rejectForms };
 }
 
 function mergeGlossaryEntries(entries: GlossaryEntry[]): GlossaryEntry[] {
@@ -498,7 +498,7 @@ function mergeGlossaryEntries(entries: GlossaryEntry[]): GlossaryEntry[] {
     const note = current.note ?? normalized.note;
     merged.set(normalized.canonical, {
       canonical: normalized.canonical,
-      aliases: dedupeStrings([...current.aliases, ...normalized.aliases]),
+      reject_forms: dedupeStrings([...current.reject_forms, ...normalized.reject_forms]),
       ...(note ? { note } : {}),
     });
   }
@@ -506,7 +506,7 @@ function mergeGlossaryEntries(entries: GlossaryEntry[]): GlossaryEntry[] {
   return [...merged.values()];
 }
 
-function splitAliasList(raw: string): string[] {
+function splitRejectFormList(raw: string): string[] {
   return raw
     .split(/[|,]/)
     .map((part) => part.trim())
@@ -523,19 +523,19 @@ export function parseGlossaryText(raw: string): GlossaryEntry[] {
     }
 
     let canonical = line;
-    let aliases: string[] = [];
+    let rejectForms: string[] = [];
 
     if (line.includes("=>")) {
       const [left, right] = line.split(/=>/, 2);
       canonical = left.trim();
-      aliases = splitAliasList(right ?? "");
+      rejectForms = splitRejectFormList(right ?? "");
     } else if (line.includes("|")) {
       const parts = line.split("|").map((part) => part.trim()).filter(Boolean);
       canonical = parts[0] ?? "";
-      aliases = parts.slice(1);
+      rejectForms = parts.slice(1);
     }
 
-    entries.push(normalizeGlossaryEntry({ canonical, aliases }, `词表第 ${index + 1} 行`));
+    entries.push(normalizeGlossaryEntry({ canonical, reject_forms: rejectForms }, `词表第 ${index + 1} 行`));
   }
 
   return mergeGlossaryEntries(entries);
@@ -543,21 +543,24 @@ export function parseGlossaryText(raw: string): GlossaryEntry[] {
 
 function parseGlossaryEntryValue(value: unknown, context: string): GlossaryEntry {
   if (typeof value === "string") {
-    return normalizeGlossaryEntry({ canonical: value, aliases: [] }, context);
+    return normalizeGlossaryEntry({ canonical: value, reject_forms: [] }, context);
   }
   if (!isRecord(value)) {
     throw new Error(`${context} 必须是字符串或对象`);
   }
 
   const canonical = value.canonical;
-  const aliases = value.aliases;
+  const rejectForms = value.reject_forms;
   const note = value.note;
 
   if (typeof canonical !== "string") {
     throw new Error(`${context}.canonical 必须是字符串`);
   }
-  if (aliases !== undefined && (!Array.isArray(aliases) || aliases.some((item) => typeof item !== "string"))) {
-    throw new Error(`${context}.aliases 必须是字符串数组`);
+  if ("aliases" in value) {
+    throw new Error(`${context}.aliases 已废弃，请使用 reject_forms`);
+  }
+  if (rejectForms !== undefined && (!Array.isArray(rejectForms) || rejectForms.some((item) => typeof item !== "string"))) {
+    throw new Error(`${context}.reject_forms 必须是字符串数组`);
   }
   if (note !== undefined && typeof note !== "string") {
     throw new Error(`${context}.note 必须是字符串`);
@@ -565,7 +568,7 @@ function parseGlossaryEntryValue(value: unknown, context: string): GlossaryEntry
 
   return normalizeGlossaryEntry({
     canonical,
-    aliases: Array.isArray(aliases) ? aliases : [],
+    reject_forms: Array.isArray(rejectForms) ? rejectForms : [],
     note: typeof note === "string" ? note : undefined,
   }, context);
 }
@@ -1817,7 +1820,7 @@ function overlapsTokenRange(
 }
 
 function subtitleContainsGlossaryEntry(text: string, entry: GlossaryEntry): boolean {
-  return text.includes(entry.canonical) || entry.aliases.some((alias) => text.includes(alias));
+  return text.includes(entry.canonical) || entry.reject_forms.some((form) => text.includes(form));
 }
 
 function unresolvedGlossaryEntries(glossary: GlossaryState): GlossaryEntry[] {
@@ -2342,10 +2345,10 @@ function validateGlossaryConsistency(subtitles: Subtitle[], glossary: GlossarySt
   const violations: string[] = [];
 
   for (const entry of combinedGlossaryEntries(glossary)) {
-    for (const alias of entry.aliases) {
+    for (const rejectForm of entry.reject_forms) {
       for (const subtitle of subtitles) {
-        if (subtitle.text.includes(alias)) {
-          violations.push(`字幕 ${subtitle.index} 仍包含别名 "${alias}"，应统一为 "${entry.canonical}"`);
+        if (subtitle.text.includes(rejectForm)) {
+          violations.push(`字幕 ${subtitle.index} 仍包含禁用写法 "${rejectForm}"，应统一为 "${entry.canonical}"`);
         }
       }
     }
@@ -2354,7 +2357,7 @@ function validateGlossaryConsistency(subtitles: Subtitle[], glossary: GlossarySt
   if (violations.length > 0) {
     const preview = violations.slice(0, 5).join("；");
     const suffix = violations.length > 5 ? `；其余 ${violations.length - 5} 处未展示` : "";
-    throw new Error(`词表一致性校验失败: ${preview}${suffix}`);
+    throw new Error(`词表禁用写法校验失败: ${preview}${suffix}`);
   }
 }
 

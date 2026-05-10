@@ -55,7 +55,7 @@ Treat subtitle timing preview fields as informational only. Rendering recomputes
 - Use glossary canonical forms for people, products, organizations, locations, and repeated domain terms.
 - Use glossary canonical forms only to normalize terms that are already present or clearly misrecognized in place.
 - Record newly resolved terms in `glossary.collected` during review.
-- Remove alias spellings from final subtitles before rendering.
+- Remove leftover glossary `reject_forms` from final subtitles before rendering; these are incorrect forms, not acceptable nicknames or alternate names.
 - If a term is uncertain, keep the original wording and flag it instead of guessing.
 
 ## Working Presets
