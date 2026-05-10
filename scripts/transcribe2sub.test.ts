@@ -13,6 +13,7 @@ import {
   normalizeWordsForSegmentation,
   parseGlossaryText,
   parseTranscribeResponse,
+  refreshAgentTranscriptQa,
   retryTranscribeRequest,
   segmentIntoSubtitles,
   subtitlesFromAgentTranscript,
@@ -721,6 +722,54 @@ test("subtitlesFromAgentTranscript accepts diagnosed long short token timing edi
 
   const subtitles = subtitlesFromAgentTranscript(transcript);
   assert.ok(subtitles[0]!.end <= 101);
+});
+
+test("refreshAgentTranscriptQa rebuilds derived fields and clears fixed flags", () => {
+  const tokens = createTokens(buildWords([
+    { text: "Hi", start: 0, end: 0.4, type: "word", speaker_id: "speaker_0" },
+    { text: " ", start: 0.4, end: 0.45, type: "spacing", speaker_id: "speaker_0" },
+    { text: "there", start: 0.45, end: 0.9, type: "word", speaker_id: "speaker_0" },
+  ]));
+
+  const transcript: AgentTranscript = {
+    version: 2,
+    source: {
+      language_code: "en",
+      language_probability: 1,
+      text: "Hi there",
+    },
+    settings: {
+      max_chars: 42,
+      max_duration: 5,
+    },
+    review: buildReview(),
+    glossary: buildGlossary(),
+    instructions: [],
+    tokens,
+    subtitles: [
+      {
+        token_start: 0,
+        token_end: 2,
+        word_start: 0,
+        word_end: 2,
+        start: 0,
+        end: 0.4,
+        text: "Hi there",
+        speaker_ids: ["speaker_0"],
+        qa_flags: [
+          {
+            code: "too_short",
+            severity: "warning",
+            message: "旧标记应被刷新移除。",
+          },
+        ],
+      },
+    ],
+  };
+
+  const refreshed = refreshAgentTranscriptQa(transcript);
+  assert.equal(refreshed.subtitles[0]!.end, 1.1);
+  assert.deepEqual(refreshed.subtitles[0]!.qa_flags, []);
 });
 
 test("subtitlesFromAgentTranscript rejects severe timing span mismatches after review edits", () => {

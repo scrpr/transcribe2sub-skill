@@ -126,10 +126,11 @@ export interface AgentTranscript {
 }
 
 interface Config {
-  mode: "transcribe" | "render" | "rebuild";
+  mode: "transcribe" | "render" | "rebuild" | "refreshQa";
   input?: string;
   fromJson?: string;
   fromRawJson?: string;
+  refreshQa?: string;
   output: string;
   language?: string;
   maxChars: number;
@@ -237,11 +238,13 @@ function printHelp(): void {
   pnpm tsx scripts/transcribe2sub.ts <audio_file> [options]
   pnpm tsx scripts/transcribe2sub.ts --from-raw-json <elevenlabs.json> [options]
   pnpm tsx scripts/transcribe2sub.ts --from-json <transcript.corrected.json> [-o output.srt]
+  pnpm tsx scripts/transcribe2sub.ts --refresh-qa <transcript.json> -o refreshed.json
 
 模式:
   <audio_file>                 转录音频/视频，可输出 SRT 或 review JSON
   --from-raw-json <file>       从 ElevenLabs 原始 JSON 重建 SRT 或 review JSON
   --from-json <file>           从 corrected JSON 渲染最终 SRT
+  --refresh-qa <file>          重新计算派生字段和 qa_flags，输出 agent JSON
 
 选项:
   -o, --output <file>          输出文件路径
@@ -371,6 +374,7 @@ function cli(): Config {
       format: { type: "string", default: "srt" },
       "from-json": { type: "string" },
       "from-raw-json": { type: "string" },
+      "refresh-qa": { type: "string" },
     },
   });
 
@@ -382,16 +386,17 @@ function cli(): Config {
   const input = positionals[0] ? resolve(positionals[0]) : undefined;
   const fromJson = values["from-json"] ? resolve(values["from-json"]) : undefined;
   const fromRawJson = values["from-raw-json"] ? resolve(values["from-raw-json"]) : undefined;
+  const refreshQa = values["refresh-qa"] ? resolve(values["refresh-qa"]) : undefined;
   const glossary = values.glossary ? resolve(values.glossary) : undefined;
   const rawOutputOption = values["raw-output"] ? resolve(values["raw-output"]) : undefined;
 
-  const providedInputs = [input, fromJson, fromRawJson].filter(Boolean).length;
+  const providedInputs = [input, fromJson, fromRawJson, refreshQa].filter(Boolean).length;
   if (providedInputs > 1) {
-    fail("不能同时提供音频输入、--from-json 和 --from-raw-json");
+    fail("不能同时提供音频输入、--from-json、--from-raw-json 和 --refresh-qa");
   }
 
   if (providedInputs === 0) {
-    fail("用法: transcribe2sub <audio_file> [options] 或 transcribe2sub --from-raw-json <elevenlabs.json> [options] 或 transcribe2sub --from-json <transcript.json> [-o output.srt]");
+    fail("用法: transcribe2sub <audio_file> [options] 或 transcribe2sub --from-raw-json <elevenlabs.json> [options] 或 transcribe2sub --from-json <transcript.json> [-o output.srt] 或 transcribe2sub --refresh-qa <transcript.json> -o refreshed.json");
   }
 
   if (input && !existsSync(input)) {
@@ -403,6 +408,9 @@ function cli(): Config {
   }
   if (fromRawJson && !existsSync(fromRawJson)) {
     fail(`原始 JSON 文件不存在: ${fromRawJson}`);
+  }
+  if (refreshQa && !existsSync(refreshQa)) {
+    fail(`JSON 文件不存在: ${refreshQa}`);
   }
   if (glossary && !existsSync(glossary)) {
     fail(`词表文件不存在: ${glossary}`);
@@ -416,6 +424,9 @@ function cli(): Config {
   if (fromRawJson && rawOutputOption) {
     fail("--raw-output 仅用于音频转录时保存 ElevenLabs 原始 JSON");
   }
+  if (refreshQa && rawOutputOption) {
+    fail("--raw-output 仅用于音频转录时保存 ElevenLabs 原始 JSON");
+  }
 
   const maxChars = Number(values["max-chars"]);
   const maxDuration = Number(values["max-duration"]);
@@ -426,9 +437,9 @@ function cli(): Config {
     fail(`--max-duration 必须是正数，当前值: ${values["max-duration"]}`);
   }
 
-  const mode: Config["mode"] = fromJson ? "render" : fromRawJson ? "rebuild" : "transcribe";
-  const format = mode === "render" ? "srt" : values.format === "json" ? "json" : "srt";
-  const basePath = fromJson ?? fromRawJson ?? input!;
+  const mode: Config["mode"] = refreshQa ? "refreshQa" : fromJson ? "render" : fromRawJson ? "rebuild" : "transcribe";
+  const format = mode === "render" ? "srt" : mode === "refreshQa" ? "json" : values.format === "json" ? "json" : "srt";
+  const basePath = refreshQa ?? fromJson ?? fromRawJson ?? input!;
   const ext = format === "json" ? ".json" : ".srt";
   const output = values.output
     ? resolve(values.output)
@@ -444,6 +455,7 @@ function cli(): Config {
     input,
     fromJson,
     fromRawJson,
+    refreshQa,
     output,
     language: values.language,
     maxChars,
@@ -2027,6 +2039,30 @@ function toJsonSubtitle(subtitle: Subtitle, qaFlags: QaFlag[] = []): JsonSubtitl
   };
 }
 
+function agentTranscriptWithRefreshedQa(data: AgentTranscript, subtitles: Subtitle[]): AgentTranscript {
+  const qaFlags = collectSubtitleQaFlags(
+    data.tokens,
+    subtitles,
+    data.review,
+    data.glossary,
+    {
+      maxChars: data.settings.max_chars,
+      maxDuration: data.settings.max_duration,
+    },
+    data.source.language_code,
+  );
+
+  return {
+    ...data,
+    subtitles: subtitles.map((subtitle, index) => toJsonSubtitle(subtitle, qaFlags[index] ?? [])),
+  };
+}
+
+export function refreshAgentTranscriptQa(data: AgentTranscript): AgentTranscript {
+  const subtitles = subtitlesFromAgentTranscript(data);
+  return agentTranscriptWithRefreshedQa(data, subtitles);
+}
+
 export function formatTimestamp(sec: number): string {
   const totalMs = Math.max(0, Math.round(sec * 1000));
   const h = Math.floor(totalMs / 3_600_000);
@@ -2439,17 +2475,8 @@ export function subtitlesFromAgentTranscript(data: AgentTranscript): Subtitle[] 
 }
 
 function validateQaPolicy(data: AgentTranscript, subtitles: Subtitle[]): void {
-  const qaFlags = collectSubtitleQaFlags(
-    data.tokens,
-    subtitles,
-    data.review,
-    data.glossary,
-    {
-      maxChars: data.settings.max_chars,
-      maxDuration: data.settings.max_duration,
-    },
-    data.source.language_code,
-  );
+  const refreshed = agentTranscriptWithRefreshedQa(data, subtitles);
+  const qaFlags = refreshed.subtitles.map((subtitle) => subtitle.qa_flags ?? []);
 
   const severeLines = summarizeQaWarnings(subtitles, qaFlags);
   if (severeLines.length === 0) {
@@ -2520,6 +2547,14 @@ async function renderFromJson(config: Config): Promise<void> {
   console.error(`[INFO] 输出: ${config.output}`);
 }
 
+async function refreshQaJson(config: Config): Promise<void> {
+  const transcript = await readAgentTranscript(config.refreshQa!);
+  const refreshed = refreshAgentTranscriptQa(transcript);
+  validateQaPolicy(refreshed, subtitlesFromAgentTranscript(refreshed));
+  await writeFile(config.output, `${JSON.stringify(refreshed, null, 2)}\n`, "utf-8");
+  console.error(`[INFO] QA 标记刷新完成: ${config.output}`);
+}
+
 async function rebuildFromRaw(config: Config): Promise<void> {
   const glossaryEntries = config.glossary ? await readGlossaryFile(config.glossary) : [];
   if (config.glossary) {
@@ -2539,6 +2574,12 @@ async function main() {
   if (config.mode === "render") {
     console.error(`[INFO] 读取 Agent JSON: ${config.fromJson}`);
     await renderFromJson(config);
+    return;
+  }
+
+  if (config.mode === "refreshQa") {
+    console.error(`[INFO] 刷新 Agent JSON QA 标记: ${config.refreshQa}`);
+    await refreshQaJson(config);
     return;
   }
 

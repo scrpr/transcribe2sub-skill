@@ -123,6 +123,7 @@ Workflow:
 2. Setup runtime and input.
    - Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from` before running the smoke-test command.
    - Read `<stem>.review.json`.
+   - Treat `script_path` as a black-box CLI tool. Do not read `scripts/transcribe2sub.ts` during normal Structural QA.
 
 3. Scan structural issues.
    - Inspect all `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
@@ -135,14 +136,19 @@ Workflow:
 
 5. Validate segmented JSON.
    - Verify every non-`spacing` token is covered exactly once.
-   - Save `<stem>.segmented.json`.
-   - Run a render smoke test from `<stem>.segmented.json` to a temporary SRT before handing off to Text QA.
+   - Save structural edits to a temporary agent JSON if needed.
+   - Run `--refresh-qa` on the edited JSON and write the refreshed result to `<stem>.segmented.json`; this recalculates derived preview fields and replaces stale `subtitles[].qa_flags`.
+   - Re-open `<stem>.segmented.json` and review the refreshed `qa_flags` before handoff.
+   - If refreshed error-level flags remain, make another structural edit draft and run `--refresh-qa` again. Repeat until no error-level flag remains or a blocker is clear.
+   - If warning-level flags remain, fix the ones that indicate real timing, segmentation, speaker-boundary, or coverage defects. Keep only warnings with a concrete non-blocking reason.
+   - Run a render smoke test from refreshed `<stem>.segmented.json` to a temporary SRT before handing off to Text QA.
    - If the smoke test fails, fix the structural cause and rerun the smoke test until it passes or report the blocker to Coordinator.
 
 6. Handoff.
    - Hand off the segmented JSON path, smoke-test result, and any remaining non-blocking warnings to Text QA.
 
 - Input `<stem>.review.json`; output `<stem>.segmented.json`.
+- Use `--refresh-qa` as the source of truth for whether structural edits resolved generated QA flags. Prefer iterative JSON edits plus refresh over reading or reasoning about the script implementation.
 - Inspect `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
 - Treat every error-level `qa_flag` as a must-fix issue. Warning-level flags are also expected to be fixed unless keeping them is clearly better for faithful timing, speaker boundaries, or token coverage.
 - Do not stop at error-level flags. For each warning, either fix it or record the specific reason it remains non-blocking in the handoff.
@@ -165,6 +171,24 @@ Workflow:
 - Ensure every non-`spacing` token belongs to exactly one subtitle.
 - If a structural fix requires semantic judgment about wording, hand off to Text QA after preserving a valid token range.
 - The smoke-test SRT is only a validation artifact. Do not deliver it as the final subtitle.
+- Do not manually delete stale `qa_flags`. After structural edits, always regenerate them with `--refresh-qa` and continue from the refreshed JSON.
+- Do not read `scripts/transcribe2sub.ts` unless a command fails with an unclear tool error, the JSON schema appears inconsistent with the documented workflow, or the user explicitly asks to debug the tool. Normal subtitle QA should use JSON fields, `references/subtitle-quality.md`, `--refresh-qa`, and the smoke-test command only.
+
+Refresh iteration pattern:
+
+```text
+1. Edit structural draft JSON.
+2. Run --refresh-qa draft -> refreshed JSON.
+3. Re-read refreshed qa_flags.
+4. Fix remaining error flags and necessary warnings.
+5. Repeat from step 2 until stable, then smoke render.
+```
+
+Refresh-QA command pattern:
+
+```bash
+pnpm tsx <script_path> --refresh-qa episode.segmented.draft.json -o episode.segmented.json
+```
 
 Smoke-test command pattern:
 
@@ -267,7 +291,7 @@ pnpm tsx <script_path> --from-json episode.corrected.json -o final.srt
 
 1. Coordinator confirms input, output stem, glossary, segmentation settings, and quality target.
 2. Transcription Builder creates `<stem>.review.json` and `<basename>.elevenlabs.json`.
-3. Structural QA creates `<stem>.segmented.json` and runs a temporary SRT smoke test from it.
+3. Structural QA refreshes QA flags into `<stem>.segmented.json` and runs a temporary SRT smoke test from it.
 4. Text QA creates `<stem>.corrected.json`.
 5. Render Validate creates the final SRT.
 
@@ -275,14 +299,14 @@ pnpm tsx <script_path> --from-json episode.corrected.json -o final.srt
 
 1. Coordinator confirms the reusable `<basename>.elevenlabs.json`, glossary, and segmentation settings.
 2. Transcription Builder uses `--from-raw-json` to create a new `<stem>.review.json`.
-3. Structural QA creates `<stem>.segmented.json` and runs a temporary SRT smoke test from it.
+3. Structural QA refreshes QA flags into `<stem>.segmented.json` and runs a temporary SRT smoke test from it.
 4. Text QA creates `<stem>.corrected.json`.
 5. Render Validate creates the final SRT.
 
 ### Continue From Existing Review JSON
 
 1. Coordinator confirms the input is `.review.json`.
-2. Structural QA creates `.segmented.json` and runs a temporary SRT smoke test from it.
+2. Structural QA refreshes QA flags into `.segmented.json` and runs a temporary SRT smoke test from it.
 3. Text QA creates `.corrected.json`.
 4. Render Validate renders from `.corrected.json`.
 
@@ -338,7 +362,7 @@ pnpm tsx <script_path> <audio> -o draft.srt
 ## Final Checks
 
 - The artifact chain is complete: review JSON, segmented JSON, corrected JSON, raw cache when applicable, and final SRT.
-- Structural QA ran a temporary SRT smoke test from `.segmented.json` before Text QA started.
+- Structural QA refreshed `qa_flags` into `.segmented.json` and ran a temporary SRT smoke test before Text QA started.
 - The final SRT was rendered from `.corrected.json`.
 - No empty subtitle remains.
 - No non-`spacing` token is missing or duplicated.
