@@ -57,15 +57,26 @@ The Coordinator routes inputs and enforces clean handoffs inside the current top
 
 The Transcription Builder only generates or rebuilds machine-reviewable JSON.
 
-Workflow checklist:
+Workflow:
 
-- Create a Transcription Builder todo list for runtime path intake, dependency checks, input classification, command execution, raw cache preservation, review JSON output, and handoff summary.
-- Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from` before running commands.
-- Confirm `ffmpeg`, Node.js, pnpm dependencies, input path, output path, glossary path, and raw JSON reuse strategy.
-- Run the selected generation or rebuild command.
-- Confirm `<stem>.review.json` exists.
-- Confirm `<basename>.elevenlabs.json` exists when audio/video was processed through the API.
-- Hand off the review JSON path, raw cache path, glossary path, and segmentation settings to Structural QA.
+1. Setup todo list.
+   - Create a Transcription Builder todo list with these groups: `Setup`, `Build`, `Validate`, and `Handoff`.
+   - Include runtime path intake, dependency checks, input classification, command execution, raw cache preservation, review JSON output, and handoff summary.
+
+2. Setup runtime and inputs.
+   - Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from` before running commands.
+   - Confirm `ffmpeg`, Node.js, pnpm dependencies, input path, output path, glossary path, and raw JSON reuse strategy.
+
+3. Build review JSON.
+   - Run the selected generation or rebuild command.
+   - Keep generation operational only; do not review or polish subtitle content.
+
+4. Validate artifacts.
+   - Confirm `<stem>.review.json` exists.
+   - Confirm `<basename>.elevenlabs.json` exists when audio/video was processed through the API.
+
+5. Handoff.
+   - Hand off the review JSON path, raw cache path, glossary path, and segmentation settings to Structural QA.
 
 - Confirm `ffmpeg` is available.
 - On first practical use after installation, run `pnpm install` from the skill root if dependencies are missing. Request approval first when the environment blocks installation.
@@ -103,17 +114,32 @@ pnpm tsx <script_path> --from-raw-json episode.review.elevenlabs.json --format j
 
 Structural QA owns non-text subtitle correctness: token coverage, timing, segmentation, and script-generated QA flags. Its output is `<stem>.segmented.json`.
 
-Workflow checklist:
+Workflow:
 
-- Create a Structural QA todo list for runtime path intake, input read, QA scan, boundary edits, coverage verification, segmented JSON save, render smoke test, and handoff summary.
-- Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from` before running the smoke-test command.
-- Read `<stem>.review.json` and inspect all `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
-- Fix structural issues by adjusting token ranges and only the minimum text synchronization required by range changes.
-- Verify every non-`spacing` token is covered exactly once.
-- Save `<stem>.segmented.json`.
-- Run a render smoke test from `<stem>.segmented.json` to a temporary SRT before handing off to Text QA.
-- If the smoke test fails, fix the structural cause and rerun the smoke test until it passes or report the blocker to Coordinator.
-- Hand off the segmented JSON path, smoke-test result, and any remaining non-blocking warnings to Text QA.
+1. Setup todo list.
+   - Create a Structural QA todo list with these groups: `Setup`, `Scan`, `Edit`, `Validate`, and `Handoff`.
+   - Include runtime path intake, input read, QA scan, boundary edits, coverage verification, segmented JSON save, render smoke test, and handoff summary.
+
+2. Setup runtime and input.
+   - Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from` before running the smoke-test command.
+   - Read `<stem>.review.json`.
+
+3. Scan structural issues.
+   - Inspect all `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
+   - Identify token coverage, timing, segmentation, speaker-boundary, pause, and flash-cue issues.
+
+4. Edit boundaries.
+   - Fix structural issues by adjusting token ranges.
+   - Change `subtitles[].text` only for the minimum synchronization required by range changes.
+
+5. Validate segmented JSON.
+   - Verify every non-`spacing` token is covered exactly once.
+   - Save `<stem>.segmented.json`.
+   - Run a render smoke test from `<stem>.segmented.json` to a temporary SRT before handing off to Text QA.
+   - If the smoke test fails, fix the structural cause and rerun the smoke test until it passes or report the blocker to Coordinator.
+
+6. Handoff.
+   - Hand off the segmented JSON path, smoke-test result, and any remaining non-blocking warnings to Text QA.
 
 - Input `<stem>.review.json`; output `<stem>.segmented.json`.
 - Inspect `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
@@ -142,20 +168,39 @@ pnpm tsx <script_path> --from-json episode.segmented.json -o /tmp/episode.segmen
 
 Text QA owns transcript fidelity and subtitle text quality after structural boundaries are stable. Its output is `<stem>.corrected.json`.
 
-Workflow checklist:
+Workflow:
 
-- Create a Text QA todo list for runtime path intake, input read, source-type check, web research when required, glossary review, reject-form review, text correction, final text sweep, corrected JSON save, and handoff summary.
-- Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from`; Text QA usually does not run the script, but must preserve these paths for handoff.
-- Read `<stem>.segmented.json` and confirm Structural QA reported a passing smoke test.
-- Determine whether the source is a film, TV episode, drama, anime, or other narrative work.
-- For narrative works, run web search before finalizing canonical names and proper nouns. Search for the official title plus likely character names, cast names, organizations, locations, and repeated proper nouns.
-- Use search results only to confirm spellings for spoken or clearly misrecognized content; do not add unstated content.
-- Review `glossary.entries`, `glossary.candidates`, and `glossary.collected` before editing subtitles.
-- Review every `reject_forms` list before saving. `reject_forms` are forbidden spellings that must not remain in final subtitles; they are not acceptable nicknames or alternate names.
-- Do not put nicknames, honorific forms, short names, relationship terms, titles, or in-universe spoken variants into `reject_forms`. Keep acceptable variants in `note` if useful.
-- Correct text quality issues across the whole transcript.
-- Save `<stem>.corrected.json`.
-- Hand off the corrected JSON path, web research summary when used, and unresolved uncertainties to Render Validate.
+1. Setup todo list.
+   - Create a Text QA todo list with these groups: `Setup`, `Research`, `Glossary`, `Edit`, `Validate`, and `Handoff`.
+   - Include runtime path intake, input read, source-type check, web research when required, glossary review, reject-form review, text correction, final text sweep, corrected JSON save, and handoff summary.
+
+2. Setup runtime and input.
+   - Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from`.
+   - Text QA usually does not run the script, but must preserve these paths for handoff.
+   - Read `<stem>.segmented.json` and confirm Structural QA reported a passing smoke test.
+
+3. Research narrative works.
+   - Determine whether the source is a film, TV episode, drama, anime, or other narrative work.
+   - For narrative works, run web search before finalizing canonical names and proper nouns.
+   - Search for the official title plus likely character names, cast names, organizations, locations, and repeated proper nouns.
+   - Use search results only to confirm spellings for spoken or clearly misrecognized content; do not add unstated content.
+
+4. Review glossary state.
+   - Review `glossary.entries`, `glossary.candidates`, and `glossary.collected` before editing subtitles.
+   - Review every `reject_forms` list before saving.
+   - Treat `reject_forms` as forbidden spellings that must not remain in final subtitles, not as acceptable nicknames or alternate names.
+   - Do not put nicknames, honorific forms, short names, relationship terms, titles, or in-universe spoken variants into `reject_forms`; keep acceptable variants in `note` if useful.
+
+5. Edit text.
+   - Correct text quality issues across the whole transcript.
+   - Keep edits within the stable token ranges produced by Structural QA.
+
+6. Validate corrected JSON.
+   - Re-scan the full transcript for ASR mistakes, term inconsistency, invalid `reject_forms`, punctuation, casing, and line-break issues.
+   - Save `<stem>.corrected.json`.
+
+7. Handoff.
+   - Hand off the corrected JSON path, web research summary when used, and unresolved uncertainties to Render Validate.
 
 - Input `<stem>.segmented.json`; output `<stem>.corrected.json`.
 - Review `subtitles[].text`, `glossary.entries`, `glossary.candidates`, and `glossary.collected` across the whole transcript.
@@ -178,15 +223,25 @@ Workflow checklist:
 
 Render Validate only renders the final reviewed JSON and checks delivery risk.
 
-Workflow checklist:
+Workflow:
 
-- Create a Render Validate todo list for runtime path intake, corrected JSON read, final render, failure classification, SRT provenance check, final delivery checks, and handoff summary.
-- Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from` before running commands.
-- Read the latest `<stem>.corrected.json`.
-- Render final SRT with `--from-json`.
-- If rendering fails, classify the issue and route it to Structural QA, Text QA, or the operational owner.
-- Confirm the final SRT came from `<stem>.corrected.json`.
-- Confirm final delivery checks before returning the SRT path.
+1. Setup todo list.
+   - Create a Render Validate todo list with these groups: `Setup`, `Render`, `Classify`, `Validate`, and `Handoff`.
+   - Include runtime path intake, corrected JSON read, final render, failure classification, SRT provenance check, final delivery checks, and handoff summary.
+
+2. Setup runtime and input.
+   - Confirm Coordinator provided `skill_root`, `script_path`, and `run_commands_from` before running commands.
+   - Read the latest `<stem>.corrected.json`.
+
+3. Render final SRT.
+   - Render final SRT with `--from-json`.
+
+4. Classify failures.
+   - If rendering fails, classify the issue and route it to Structural QA, Text QA, or the operational owner.
+
+5. Validate delivery.
+   - Confirm the final SRT came from `<stem>.corrected.json`.
+   - Confirm final delivery checks before returning the SRT path.
 
 - Input the latest `<stem>.corrected.json`; never render final SRT directly from `<stem>.review.json` or `<stem>.segmented.json`.
 - Run JSON-to-SRT rendering.
