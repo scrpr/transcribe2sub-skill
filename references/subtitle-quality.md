@@ -13,12 +13,12 @@
 - `subtitles[].token_start`
 - `subtitles[].token_end`
 - `subtitles[].text`
+- `tokens[].start` / `tokens[].end` only for diagnosed `long_short_token` timing repair
 
 ## Read-Only Fields
 
 - `tokens[].id`
-- `tokens[].start`
-- `tokens[].end`
+- `tokens[].start` / `tokens[].end` outside diagnosed `long_short_token` timing repair
 - `tokens[].type`
 - `tokens[].speaker_id`
 - `subtitles[].start`
@@ -36,6 +36,7 @@ Treat subtitle timing preview fields as informational only. Rendering recomputes
 - Keep modifiers, negation, and attached particles with the words they qualify.
 - Avoid joining two unrelated clauses only because each clause is short on its own.
 - Avoid one-word flash subtitles unless the audio itself is abrupt and isolated.
+- For an implausibly long one-character CJK/kana token or short syllable, narrow the token timing when it clearly swallowed silence; use 1 second as the normal upper bound for a single kana unless the audio is genuinely sustained.
 - When merging adjacent cues, keep the original cue/token order. Merging may change punctuation, not word order.
 
 ## Text Cleanup

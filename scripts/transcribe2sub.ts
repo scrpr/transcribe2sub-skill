@@ -73,6 +73,7 @@ type QaFlagCode =
   | "ends_mid_word"
   | "starts_mid_word"
   | "contains_mixed_raw_token"
+  | "long_short_token"
   | "glossary_unresolved";
 
 type QaSeverity = "info" | "warning" | "error";
@@ -219,6 +220,7 @@ const DEFAULT_REVIEW_CHECKLIST = [
   "发现新术语时，将 canonical 写法记录到 glossary.collected，必要时补充 reject_forms。",
   "对重复出现的人名、队名、作品名和系列名，优先统一 canonical 写法；不确定时保留原文并留在 glossary.candidates。",
   "对 zero_duration、timing_span_mismatch、too_short、too_long、ends_mid_word、starts_mid_word，优先通过调整 token range 修复，再做文字润色。",
+  "对 long_short_token，若短 token 明显吞掉后方静音或拖尾，允许只修改该 token 的 start/end；单个假名或短音节通常不应超过 1 秒。",
   "即使没有 qa_flags，也要主动巡检 flash cue、长时长短文本、跨完整句、跨说话人和异常停顿。",
   "保持每条字幕的 token range 连续、完整且不重叠。",
   "完成前检查专名修正是否误把泛称扩写成具体姓名，或把后一句词移动到前一句。",
@@ -1909,12 +1911,13 @@ function collectSubtitleQaFlags(
     }
 
     for (const diagnostic of review.normalization_diagnostics) {
-      if (diagnostic.code !== "mixed_raw_token") {
+      if (diagnostic.code === "mixed_script_span") {
         continue;
       }
       if (overlapsTokenRange(subtitle, diagnostic.token_start, diagnostic.token_end)) {
+        const code = diagnostic.code === "mixed_raw_token" ? "contains_mixed_raw_token" : diagnostic.code;
         flagsBySubtitle[index]?.push({
-          code: "contains_mixed_raw_token",
+          code,
           severity: diagnostic.severity,
           message: diagnostic.message,
         });
@@ -2092,12 +2095,13 @@ export function formatAgentJSON(
       "允许合并相邻 cue，但合并文本必须保持原 token/cue 顺序；例如“敵わないな。カミーナさんには。”可改为“敵わないな、上伊那さんには。”，不能改为“上伊那さんには敵わないな。”。",
       "在纠正 ASR 错词的同时，主动抽取人名、品牌名、产品名、地名和领域术语，先写入 glossary.candidates，再把确认过的 canonical 写法写入 glossary.collected。",
       "优先使用 glossary.entries 与 glossary.collected 中的 canonical 写法；glossary.candidates 只是 review 阶段的暂存区，不能作为向台词加词的许可。",
-      "如果字幕上带有 qa_flags，优先处理 zero_duration / timing_span_mismatch / ends_mid_word / starts_mid_word / too_short / too_long / contains_mixed_raw_token / glossary_unresolved 这些提示。",
+      "如果字幕上带有 qa_flags，优先处理 zero_duration / timing_span_mismatch / ends_mid_word / starts_mid_word / too_short / too_long / contains_mixed_raw_token / long_short_token / glossary_unresolved 这些提示。",
       "对 zero_duration、timing_span_mismatch、too_short、too_long，先检查 token_start / token_end 是否需要收紧、拆分、合并或移动，再处理文字。",
+      "对 long_short_token，若短 token 明显吞掉静音或拖尾，允许只修改该 token 的 start/end；单个假名或短音节通常不应超过 1 秒。",
       "即使没有 qa_flags，也要主动寻找过短闪 cue、过长挂屏、短文本配超长时间、跨完整句和跨 speaker change 的问题。",
       "优先让每条字幕对应完整句子、从句或自然停顿；不要跨 speaker change 强行合并。",
-      "只修改 subtitles[].token_start、subtitles[].token_end、subtitles[].text。",
-      "不要修改 tokens[].id、tokens[].start、tokens[].end、tokens[].type、tokens[].speaker_id。",
+      "只修改 subtitles[].token_start、subtitles[].token_end、subtitles[].text；只有 long_short_token 诊断覆盖的异常短 word token 例外，可改 tokens[].start/end。",
+      "不要修改 tokens[].id、tokens[].text、tokens[].type、tokens[].speaker_id；除 long_short_token 外不要修改 tokens[].start/end。",
       "subtitles[].start、subtitles[].end、word_*、speaker_ids 是派生预览字段，渲染时会按 token range 重算。",
       "每个非 spacing token 必须且只能属于一条字幕，不能丢词或重叠；纠错应仅限于当前时段内真实说出的内容。",
       "subtitles[].text 是最终展示文本，可修正错词、标点、大小写和换行，并保持术语前后一致。",
@@ -2144,6 +2148,34 @@ function parseToken(value: unknown, index: number): Token {
   }
 
   return { id, text, start, end, type, speaker_id };
+}
+
+function validateEditedTokenTimings(tokens: Token[], diagnostics: NormalizationDiagnostic[]): void {
+  const editableTokenIds = new Set(
+    diagnostics
+      .filter((diagnostic) => diagnostic.code === "long_short_token")
+      .flatMap((diagnostic) => {
+        const ids: number[] = [];
+        for (let id = diagnostic.token_start; id <= diagnostic.token_end; id++) {
+          ids.push(id);
+        }
+        return ids;
+      }),
+  );
+
+  let previousTimedToken: Token | undefined;
+  for (const token of tokens) {
+    if (token.type === "spacing") {
+      continue;
+    }
+    if (editableTokenIds.has(token.id) && (token.type !== "word" || visibleSpeechCharCount(token.text) > 2 || isPunctuationOnlyToken(token))) {
+      throw new Error(`tokens[${token.id}] 不是可裁剪的短 word token`);
+    }
+    if (previousTimedToken && token.start + ZERO_DURATION_EPSILON < previousTimedToken.end) {
+      throw new Error(`tokens[${token.id}] 与前一个可计时 token 时间重叠`);
+    }
+    previousTimedToken = token;
+  }
 }
 
 function parseJsonSubtitle(value: unknown, index: number): JsonSubtitle {
@@ -2260,6 +2292,7 @@ function parseQaFlag(value: unknown): QaFlag {
     && code !== "ends_mid_word"
     && code !== "starts_mid_word"
     && code !== "contains_mixed_raw_token"
+    && code !== "long_short_token"
     && code !== "glossary_unresolved"
   ) {
     throw new Error("qa_flag.code 无效");
@@ -2453,7 +2486,7 @@ async function readAgentTranscript(jsonPath: string): Promise<AgentTranscript> {
     throw new Error("tokens 或 subtitles 字段缺失");
   }
 
-  return {
+  const transcript: AgentTranscript = {
     version: 2,
     source: {
       language_code: typeof parsed.source.language_code === "string" ? parsed.source.language_code : "",
@@ -2472,6 +2505,9 @@ async function readAgentTranscript(jsonPath: string): Promise<AgentTranscript> {
     tokens: parsed.tokens.map(parseToken),
     subtitles: parsed.subtitles.map(parseJsonSubtitle),
   };
+
+  validateEditedTokenTimings(transcript.tokens, transcript.review.normalization_diagnostics);
+  return transcript;
 }
 
 async function renderFromJson(config: Config): Promise<void> {

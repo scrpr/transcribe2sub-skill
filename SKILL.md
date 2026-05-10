@@ -126,6 +126,7 @@ Workflow:
 
 3. Scan structural issues.
    - Inspect all `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
+   - Convert each flag into one of three outcomes before editing: `fix now`, `leave with reason`, or `hand off/blocker`; do not treat warnings as optional noise.
    - Identify token coverage, timing, segmentation, speaker-boundary, pause, and flash-cue issues.
 
 4. Edit boundaries.
@@ -143,16 +144,23 @@ Workflow:
 
 - Input `<stem>.review.json`; output `<stem>.segmented.json`.
 - Inspect `subtitles[].qa_flags` and `review.normalization_diagnostics` before editing.
-- Treat every error-level `qa_flag` as a must-fix issue. Review warning-level flags deliberately instead of ignoring them.
-- Fix `zero_duration`, `timing_span_mismatch`, `too_short`, `too_long`, `ends_mid_word`, `starts_mid_word`, and `contains_mixed_raw_token` before text polish begins.
+- Treat every error-level `qa_flag` as a must-fix issue. Warning-level flags are also expected to be fixed unless keeping them is clearly better for faithful timing, speaker boundaries, or token coverage.
+- Do not stop at error-level flags. For each warning, either fix it or record the specific reason it remains non-blocking in the handoff.
+- Fix `zero_duration`, `timing_span_mismatch`, `too_short`, `too_long`, `ends_mid_word`, `starts_mid_word`, `contains_mixed_raw_token`, and `long_short_token` before text polish begins unless a listed exception applies.
+- For `too_short`, prefer merging with adjacent speech when the result does not cross a speaker change, long pause, or complete-sentence boundary.
+- For `too_long`, prefer splitting at punctuation, natural clause boundaries, pauses, or speaker changes. A warning may remain only when the line is a slow coherent phrase and splitting would make timing or meaning worse.
+- For `contains_mixed_raw_token`, verify the token split and boundary. Fix it if the subtitle starts/ends inside a raw token artifact; leave it only when the generated split already matches the spoken boundary.
+- For `long_short_token`, inspect the token itself, not only its containing subtitle. If a one-character CJK/kana token, short syllable, or similarly short word is held for an implausibly long duration because it swallowed silence or trailing audio, narrow that token's `start`/`end` to a plausible spoken span; as a working ceiling, a single kana or one-character utterance should normally be no longer than 1 second.
+- When narrowing a `long_short_token`, edit only the diagnosed short word token's `tokens[].start` and/or `tokens[].end`; preserve `tokens[].id`, `tokens[].text`, `tokens[].type`, and `tokens[].speaker_id`. Keep token times monotonic and non-overlapping with neighboring timed tokens.
+- Do not narrow a genuinely sustained vocalization, sung syllable, shouted interjection, or held audio event just to satisfy the 1 second heuristic. Keep it and explain the reason.
 - Actively inspect for flash cues, short text held too long, oversized cues, unnatural joins across complete sentences, cross-speaker merges, and abnormal pauses even when no flag is present.
 - Prefer token-boundary changes for structural defects. Let token ranges determine timing; never hand-edit preview timestamps.
 - Break at complete sentences, clauses, pauses, and speaker changes. Do not split inside a tightly bound phrase only to satisfy a character limit.
 - Merge adjacent cues only when speaker continuity, pause length, duration, and character limits remain acceptable.
 - If cues are merged, preserve original token/cue order. Do not rewrite the text into a more natural or literary word order.
-- Edit only `subtitles[].token_start`, `subtitles[].token_end`, and the minimum `subtitles[].text` synchronization needed after range changes.
+- Edit only `subtitles[].token_start`, `subtitles[].token_end`, the minimum `subtitles[].text` synchronization needed after range changes, and `tokens[].start/end` only for diagnosed `long_short_token` timing repair.
 - Do not correct ASR mistakes, homophones, proper nouns, spelling, punctuation style, casing, line breaks, or glossary consistency unless required to keep text aligned after a range change.
-- Never edit `tokens[].id`, `tokens[].start`, `tokens[].end`, `tokens[].type`, or `tokens[].speaker_id`.
+- Never edit `tokens[].id`, `tokens[].text`, `tokens[].type`, or `tokens[].speaker_id`. Never edit `tokens[].start/end` except for a diagnosed `long_short_token` that needs a narrower spoken span.
 - Never hand-edit `subtitles[].start`, `subtitles[].end`, `word_*`, or `speaker_ids`; they are derived preview fields.
 - Ensure every non-`spacing` token belongs to exactly one subtitle.
 - If a structural fix requires semantic judgment about wording, hand off to Text QA after preserving a valid token range.
@@ -301,9 +309,10 @@ pnpm tsx <script_path> <audio> -o draft.srt
 
 - Transcription Builder owns generated raw artifacts and `<stem>.review.json` creation.
 - Structural QA owns `subtitles[].token_start`, `subtitles[].token_end`, and minimal text synchronization caused by range changes.
+- Structural QA may also edit `tokens[].start/end` only for diagnosed `long_short_token` timing repair.
 - Text QA owns `subtitles[].text`, `glossary.candidates`, and `glossary.collected`.
 - Render Validate owns SRT rendering and final delivery checks.
-- No worker subagent may edit `tokens[].id`, `tokens[].start`, `tokens[].end`, `tokens[].type`, `tokens[].speaker_id`, `subtitles[].start`, `subtitles[].end`, `word_*`, or `speaker_ids`.
+- No worker subagent may edit `tokens[].id`, `tokens[].text`, `tokens[].type`, `tokens[].speaker_id`, `subtitles[].start`, `subtitles[].end`, `word_*`, or `speaker_ids`. `tokens[].start/end` are read-only except for Structural QA's diagnosed `long_short_token` repair.
 
 ## Required
 

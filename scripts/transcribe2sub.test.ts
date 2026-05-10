@@ -521,6 +521,26 @@ test("normalizeWordsForSegmentation splits mixed raw tokens and records diagnost
   assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "long_short_token" && diagnostic.raw_text === "。ま"));
 });
 
+test("formatAgentJSON exposes long short token QA flags", () => {
+  const words = buildWords([
+    { text: "あ", start: 0, end: 3, type: "word", speaker_id: "speaker_0" },
+  ]);
+  const normalized = normalizeWordsForSegmentation(words);
+  const tokens = createTokens(normalized.words);
+  const subtitles = segmentIntoSubtitles(tokens, 22, 6, { languageCode: "ja" });
+
+  const json = JSON.parse(formatAgentJSON({
+    language_code: "ja",
+    language_probability: 1,
+    text: "あ",
+    words: normalized.words,
+  }, tokens, subtitles, { maxChars: 22, maxDuration: 6 }, [], normalized.diagnostics)) as {
+    subtitles: Array<{ qa_flags?: Array<{ code: string }> }>;
+  };
+
+  assert.ok(json.subtitles.some((subtitle) => subtitle.qa_flags?.some((flag) => flag.code === "long_short_token")));
+});
+
 test("subtitlesFromAgentTranscript clips long punctuation tails while preserving readable short cues", () => {
   const tokens = createTokens(buildWords([
     { text: "誰", start: 1092.102, end: 1092.222, type: "word", speaker_id: "speaker_0" },
@@ -640,6 +660,67 @@ test("subtitlesFromAgentTranscript clips anomalous short-word tails before trail
   const subtitles = subtitlesFromAgentTranscript(transcript);
   assert.ok(subtitles[0]!.end < 715);
   assert.ok(subtitles[0]!.end >= 714.6);
+});
+
+test("subtitlesFromAgentTranscript accepts diagnosed long short token timing edits", () => {
+  const tokens = createTokens(buildWords([
+    { text: "あ", start: 100, end: 100.8, type: "word", speaker_id: "speaker_0" },
+    { text: "い", start: 102, end: 102.2, type: "word", speaker_id: "speaker_0" },
+  ]));
+
+  const transcript: AgentTranscript = {
+    version: 2,
+    source: {
+      language_code: "ja",
+      language_probability: 1,
+      text: "あい",
+    },
+    settings: {
+      max_chars: 22,
+      max_duration: 6,
+    },
+    review: {
+      ...buildReview(),
+      normalization_diagnostics: [
+        {
+          code: "long_short_token",
+          severity: "warning",
+          token_start: 0,
+          token_end: 0,
+          raw_text: "あ",
+          message: "短 token 持续时间异常偏长。",
+        },
+      ],
+    },
+    glossary: buildGlossary(),
+    instructions: [],
+    tokens,
+    subtitles: [
+      {
+        token_start: 0,
+        token_end: 0,
+        word_start: 0,
+        word_end: 0,
+        start: 100,
+        end: 100.8,
+        text: "あ",
+        speaker_ids: ["speaker_0"],
+      },
+      {
+        token_start: 1,
+        token_end: 1,
+        word_start: 1,
+        word_end: 1,
+        start: 102,
+        end: 102.2,
+        text: "い",
+        speaker_ids: ["speaker_0"],
+      },
+    ],
+  };
+
+  const subtitles = subtitlesFromAgentTranscript(transcript);
+  assert.ok(subtitles[0]!.end <= 101);
 });
 
 test("subtitlesFromAgentTranscript rejects severe timing span mismatches after review edits", () => {
