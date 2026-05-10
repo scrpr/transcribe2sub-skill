@@ -131,11 +131,11 @@ Workflow:
    - Identify token coverage, timing, segmentation, speaker-boundary, pause, and flash-cue issues.
 
 4. Edit boundaries.
-   - Fix structural issues by adjusting token ranges.
+   - Fix structural issues by adjusting token ranges, splitting subtitle entries, or merging adjacent subtitle entries.
    - Change `subtitles[].text` only for the minimum synchronization required by range changes.
 
 5. Validate segmented JSON.
-   - Verify every non-`spacing` token is covered exactly once.
+   - Verify every non-empty, non-`spacing` token is covered exactly once.
    - Save structural edits to a temporary agent JSON if needed.
    - Run `--refresh-qa` on the edited JSON and write the refreshed result to `<stem>.segmented.json`; this recalculates derived preview fields and replaces stale `subtitles[].qa_flags`.
    - Re-open `<stem>.segmented.json` and review the refreshed `qa_flags` before handoff.
@@ -153,6 +153,7 @@ Workflow:
 - Treat every error-level `qa_flag` as a must-fix issue. Warning-level flags are also expected to be fixed unless keeping them is clearly better for faithful timing, speaker boundaries, or token coverage.
 - Do not stop at error-level flags. For each warning, either fix it or record the specific reason it remains non-blocking in the handoff.
 - Fix `zero_duration`, `timing_span_mismatch`, `too_short`, `too_long`, `ends_mid_word`, `starts_mid_word`, `contains_mixed_raw_token`, and `long_short_token` before text polish begins unless a listed exception applies.
+- For `zero_duration`, do not assume the only fix is moving a boundary. If the zero-duration cue itself contains a zero-duration or near-zero timed token, merge it into the best adjacent cue when speaker continuity, phrase continuity, and token order allow it; delete the absorbed subtitle entry after its token range is covered by the merged entry.
 - For `too_short`, prefer merging with adjacent speech when the result does not cross a speaker change, long pause, or complete-sentence boundary.
 - For `too_long`, prefer splitting at punctuation, natural clause boundaries, pauses, or speaker changes. A warning may remain only when the line is a slow coherent phrase and splitting would make timing or meaning worse.
 - For `contains_mixed_raw_token`, verify the token split and boundary. Fix it if the subtitle starts/ends inside a raw token artifact; leave it only when the generated split already matches the spoken boundary.
@@ -163,12 +164,14 @@ Workflow:
 - Prefer token-boundary changes for structural defects. Let token ranges determine timing; never hand-edit preview timestamps.
 - Break at complete sentences, clauses, pauses, and speaker changes. Do not split inside a tightly bound phrase only to satisfy a character limit.
 - Merge adjacent cues only when speaker continuity, pause length, duration, and character limits remain acceptable.
+- You may add, remove, split, or merge `subtitles[]` entries as needed for structural segmentation. This is allowed when every non-empty, non-`spacing` token remains covered exactly once and the refreshed JSON regenerates indexes and preview fields.
+- You may delete an empty subtitle entry when it covers no timed token, only `spacing` tokens, or a token range whose rendered text is empty. Do not delete a subtitle entry merely because it is short; merge its non-empty tokens into an adjacent entry instead.
 - If cues are merged, preserve original token/cue order. Do not rewrite the text into a more natural or literary word order.
-- Edit only `subtitles[].token_start`, `subtitles[].token_end`, the minimum `subtitles[].text` synchronization needed after range changes, and `tokens[].start/end` only for diagnosed `long_short_token` timing repair.
+- Edit only `subtitles[]` entry boundaries and count, the minimum `subtitles[].text` synchronization needed after range changes, and `tokens[].start/end` only for diagnosed `long_short_token` timing repair.
 - Do not correct ASR mistakes, homophones, proper nouns, spelling, punctuation style, casing, line breaks, or glossary consistency unless required to keep text aligned after a range change.
 - Never edit `tokens[].id`, `tokens[].text`, `tokens[].type`, or `tokens[].speaker_id`. Never edit `tokens[].start/end` except for a diagnosed `long_short_token` that needs a narrower spoken span.
 - Never hand-edit `subtitles[].start`, `subtitles[].end`, `word_*`, or `speaker_ids`; they are derived preview fields.
-- Ensure every non-`spacing` token belongs to exactly one subtitle.
+- Ensure every non-empty, non-`spacing` token belongs to exactly one subtitle. Empty token ranges or spacing-only entries may be removed if `--refresh-qa` accepts the result.
 - If a structural fix requires semantic judgment about wording, hand off to Text QA after preserving a valid token range.
 - The smoke-test SRT is only a validation artifact. Do not deliver it as the final subtitle.
 - Do not manually delete stale `qa_flags`. After structural edits, always regenerate them with `--refresh-qa` and continue from the refreshed JSON.
@@ -332,7 +335,7 @@ pnpm tsx <script_path> <audio> -o draft.srt
 ## Field Ownership
 
 - Transcription Builder owns generated raw artifacts and `<stem>.review.json` creation.
-- Structural QA owns `subtitles[].token_start`, `subtitles[].token_end`, and minimal text synchronization caused by range changes.
+- Structural QA owns `subtitles[]` structural segmentation: token ranges, split/merge entry count changes, and minimal text synchronization caused by range changes.
 - Structural QA may also edit `tokens[].start/end` only for diagnosed `long_short_token` timing repair.
 - Text QA owns `subtitles[].text`, `glossary.candidates`, and `glossary.collected`.
 - Render Validate owns SRT rendering and final delivery checks.
@@ -342,7 +345,7 @@ pnpm tsx <script_path> <audio> -o draft.srt
 
 - Prefer the review pipeline over direct SRT for quality work.
 - Keep structural QA and text QA separate. Stabilize token ranges before text polish.
-- Preserve every non-`spacing` token exactly once across subtitles.
+- Preserve every non-empty, non-`spacing` token exactly once across subtitles.
 - Preserve raw ElevenLabs JSON after first API processing and reuse it for later rebuilds.
 - Read `references/subtitle-quality.md` before regrouping, splitting, merging, or polishing subtitles.
 - Read `references/glossary-format.md` before creating or loading a user glossary.
@@ -355,7 +358,7 @@ pnpm tsx <script_path> <audio> -o draft.srt
 - Never edit token identity, token timestamps, speaker IDs, or derived preview fields.
 - Never treat `glossary.candidates` as confirmed truth before promotion into `glossary.collected`.
 - Never use `reject_forms` for acceptable nicknames, short names, honorifics, relationship terms, or in-universe variants that may legitimately remain in subtitle text.
-- Never drop or duplicate timed tokens to make a subtitle read better.
+- Never drop or duplicate non-empty timed tokens to make a subtitle read better. Only empty or spacing-only subtitle entries may disappear.
 - Never expand a generic form of address into a specific name unless that name is actually present in the current token span.
 - Never reorder words or clauses while correcting names, punctuation, or merged cue text.
 
@@ -365,7 +368,7 @@ pnpm tsx <script_path> <audio> -o draft.srt
 - Structural QA refreshed `qa_flags` into `.segmented.json` and ran a temporary SRT smoke test before Text QA started.
 - The final SRT was rendered from `.corrected.json`.
 - No empty subtitle remains.
-- No non-`spacing` token is missing or duplicated.
+- No non-empty, non-`spacing` token is missing or duplicated.
 - No obvious ASR error, unresolved term inconsistency, or error-level `qa_flag` remains.
 - Name and term corrections did not add unstated content or change word order.
 - Structural QA ran before Text QA, and Text QA did not change token ranges.

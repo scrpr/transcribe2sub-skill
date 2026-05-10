@@ -10,6 +10,7 @@
 
 ## Allowed Edits
 
+- Add, remove, split, or merge `subtitles[]` entries for structural segmentation
 - `subtitles[].token_start`
 - `subtitles[].token_end`
 - `subtitles[].text`
@@ -32,10 +33,13 @@ Treat subtitle timing preview fields as informational only. Rendering recomputes
 ## Good Segmentation
 
 - Keep one subtitle focused on one complete idea, sentence, or natural clause.
+- Preserve every non-empty, non-`spacing` token exactly once after entry changes.
+- Remove empty subtitle entries only when they cover no timed token, only `spacing` tokens, or a token range whose rendered text is empty.
 - Split on sentence endings, clear clause endings, long pauses, and speaker changes.
 - Keep modifiers, negation, and attached particles with the words they qualify.
 - Avoid joining two unrelated clauses only because each clause is short on its own.
 - Avoid one-word flash subtitles unless the audio itself is abrupt and isolated.
+- Merge a zero-duration cue into the best adjacent cue when its own timed token is zero-duration or near-zero and the merged cue preserves speaker continuity, phrase continuity, and token order.
 - For an implausibly long one-character CJK/kana token or short syllable, narrow the token timing when it clearly swallowed silence; use 1 second as the normal upper bound for a single kana unless the audio is genuinely sustained.
 - When merging adjacent cues, keep the original cue/token order. Merging may change punctuation, not word order.
 
@@ -68,7 +72,7 @@ Treat subtitle timing preview fields as informational only. Rendering recomputes
 
 ## Final QA
 
-- Every non-`spacing` token appears exactly once.
+- Every non-empty, non-`spacing` token appears exactly once.
 - Obvious ASR misrecognitions have been corrected or intentionally left unchanged for lack of evidence.
 - Canonical spellings from the glossary are used consistently.
 - No subtitle crosses an obvious speaker change without a strong reason.
